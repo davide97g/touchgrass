@@ -1,0 +1,266 @@
+import {
+  BufferAttribute,
+  DoubleSide,
+  Group,
+  InstancedBufferAttribute,
+  InstancedBufferGeometry,
+  Mesh,
+  ShaderMaterial,
+  Vector4,
+} from 'three';
+import { U } from '../core/uniforms';
+import { COMMON_GLSL } from './common';
+
+export interface GrassLayerConfig {
+  /** Side of the square patch that wraps around the camera (m). */
+  size: number;
+  /** Blades per square metre. */
+  density: number;
+  /** Vertical segments per blade. */
+  segments: number;
+  /** Width multiplier (far blades are wider to cover more ground). */
+  widthScale: number;
+  /** Distance fade: [inStart, inEnd, outStart, outEnd]. */
+  fade: [number, number, number, number];
+}
+
+const VERT = /* glsl */ `
+${COMMON_GLSL}
+uniform float uPatchSize;
+uniform vec4 uFade;
+uniform float uLodWidth;
+uniform float uGrassHeight;
+uniform float uGrassHeightVar;
+uniform float uGrassWidth;
+uniform float uStiffness;
+uniform sampler2D uTrailMap;
+uniform vec2 uTrailCenter;
+uniform float uTrailSize;
+
+attribute vec2 aPos;
+attribute vec4 aRand;
+
+varying float vT;
+varying vec3 vNormal;
+varying vec3 vWorldPos;
+varying float vGust;
+varying float vVar;
+varying float vPatch;
+
+vec2 hash22(vec2 p) {
+  p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+  return fract(sin(p) * 43758.5453);
+}
+
+void main() {
+  float t = position.y;
+  float side = position.x;
+
+  // Wrap the patch around the camera: each blade stays fixed in world space.
+  vec2 rel = mod(aPos - cameraPosition.xz + 0.5 * uPatchSize, uPatchSize) - 0.5 * uPatchSize;
+  vec2 base = cameraPosition.xz + rel;
+  float dist = length(rel);
+
+  // Re-randomise per tile so repetition is invisible.
+  vec2 tile = floor(base / uPatchSize);
+  vec4 r = fract(aRand + vec4(hash22(tile), hash22(tile + 17.0)));
+
+  float clump = nz(base / 40.0).a;
+  float h = uGrassHeight * (1.0 + (r.x - 0.5) * 2.0 * uGrassHeightVar) * mix(0.6, 1.25, clump);
+  float fade = smoothstep(uFade.x, uFade.y, dist) * (1.0 - smoothstep(uFade.z, uFade.w, dist));
+  vec4 feat = featAt(base);
+  // No grass in the water; short, sparse grass on the shores.
+  float shore = smoothstep(0.25, 1.0, feat.g) * (0.6 + 0.4 * step(0.5, r.w));
+  fade *= (1.0 - smoothstep(0.2, 0.5, feat.a)) * (1.0 - shore * 0.8);
+  h *= fade;
+
+  float w = uGrassWidth * mix(0.7, 1.3, r.y) * uLodWidth;
+  float ground = terrainHeight(base);
+
+  float theta = r.z * 6.2831853;
+  vec2 facing = vec2(cos(theta), sin(theta));
+  vec2 leanDir = vec2(-facing.y, facing.x) * (r.w > 0.5 ? 1.0 : -1.0);
+
+  // --- Bend: rest lean + wind (sway, gusts, flutter) + trail push ---
+  vec2 bend = leanDir * (0.12 + 0.3 * r.w);
+  float gust = gustAt(base);
+  float sway = swayAt(base);
+  float ws = uWindStrength;
+  float phase = dot(base, uWindDir) * 0.55;
+  float flutter = sin(uTime * (2.8 + r.y * 2.2) + r.x * 6.2831 - phase);
+  float spring = sin(uTime * 1.7 + r.z * 3.0 - phase * 0.4);
+  float windAmt = ws * (0.12 + 0.42 * sway + 0.95 * gust * uGustStrength);
+  windAmt += ws * (0.1 * flutter * (0.35 + gust) + 0.12 * spring * gust * uGustStrength);
+  vec2 perp = vec2(-uWindDir.y, uWindDir.x);
+  bend += uWindDir * windAmt + perp * 0.05 * flutter * ws;
+  bend /= uStiffness;
+
+  vec2 tuv = (base - uTrailCenter) / uTrailSize + 0.5;
+  float edge = smoothstep(0.0, 0.08, tuv.x) * smoothstep(1.0, 0.92, tuv.x)
+             * smoothstep(0.0, 0.08, tuv.y) * smoothstep(1.0, 0.92, tuv.y);
+  vec2 push = textureLod(uTrailMap, tuv, 0.0).rg * edge;
+  bend += push * 1.7;
+
+  float bl = length(bend);
+  float A = clamp(bl, 0.0, 1.45);
+  vec2 bdir = bl > 1e-4 ? bend / bl : vec2(1.0, 0.0);
+
+  // Constant-length circular arc: angle grows linearly up the blade.
+  float a = A * t;
+  float along, up;
+  if (A < 1e-3) { along = 0.0; up = h * t; }
+  else { along = h * (1.0 - cos(a)) / A; up = h * sin(a) / A; }
+
+  float width = w * (1.0 - t) * (1.0 + 0.35 * t);
+  vec3 wAxis = vec3(facing.x, 0.0, facing.y);
+  vec3 pos = vec3(base.x, ground, base.y)
+           + vec3(bdir.x * along, up, bdir.y * along)
+           + wAxis * side * width;
+
+  vec3 tangent = vec3(bdir.x * sin(a), cos(a), bdir.y * sin(a));
+  vec3 n = normalize(cross(wAxis, tangent));
+  n = normalize(n + wAxis * side * 0.55);
+
+  vT = t;
+  vNormal = n;
+  vWorldPos = pos;
+  vGust = gust * ws * uGustStrength;
+  vVar = r.y;
+  vPatch = smoothstep(0.55, 0.85, nz(base / 150.0 + vec2(0.2, 0.9)).b);
+
+  gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
+}
+`;
+
+const FRAG = /* glsl */ `
+${COMMON_GLSL}
+uniform float uFarLod;
+uniform vec3 uGrassBase;
+uniform vec3 uGrassMid;
+uniform vec3 uGrassTip;
+uniform vec3 uTint;
+
+varying float vT;
+varying vec3 vNormal;
+varying vec3 vWorldPos;
+varying float vGust;
+varying float vVar;
+varying float vPatch;
+
+void main() {
+  // Far blades are seen mostly by their sunlit upper halves.
+  float t = mix(vT, 0.35 + 0.65 * vT, uFarLod);
+  vec3 col = mix(uGrassBase, uGrassMid, smoothstep(0.0, 0.45, t));
+  col = mix(col, uGrassTip, smoothstep(0.38, 1.0, t));
+  col *= mix(0.82, 1.12, vVar);
+  col = mix(col, col * vec3(1.18, 1.06, 0.62), vPatch * 0.55);
+  col *= uTint;
+
+  vec3 N = normalize(vNormal);
+  if (!gl_FrontFacing) N = -N;
+  vec3 V = normalize(cameraPosition - vWorldPos);
+  vec3 L = uSunDir;
+
+  // Soft two-band toon light.
+  float ndl = dot(N, L);
+  float diff = smoothstep(-0.25, 0.55, ndl);
+  vec3 light = uAmbient + uSunColor * (0.35 + 0.65 * diff) * max(L.y + 0.15, 0.0) * 1.15;
+  col *= light;
+
+  // Backlit translucency: tips glow when looking toward the sun.
+  float back = pow(clamp(dot(-V, L), 0.0, 1.0), 3.0) * smoothstep(0.2, 1.0, vT);
+  col += uSunColor * uGrassTip * uTint * back * 0.55;
+
+  // Gust sheen: blades bending over flash their light side (the anime "wave").
+  col += vGust * smoothstep(0.25, 1.0, vT) * uSunColor * uTint * vec3(0.22, 0.26, 0.09);
+
+  col *= cloudShadowAt(vWorldPos.xz);
+  col *= mix(0.32, 1.0, smoothstep(0.0, 0.55, t));
+
+  col = applyFog(col, vWorldPos);
+  gl_FragColor = vec4(col, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;
+
+function bladeGeometry(segments: number): InstancedBufferGeometry {
+  const geo = new InstancedBufferGeometry();
+  const verts: number[] = [];
+  for (let i = 0; i < segments; i++) {
+    const t = i / segments;
+    verts.push(-1, t, 0, 1, t, 0);
+  }
+  verts.push(0, 1, 0);
+  const idx: number[] = [];
+  for (let i = 0; i < segments - 1; i++) {
+    const a = i * 2;
+    idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+  }
+  const last = (segments - 1) * 2;
+  idx.push(last, last + 1, last + 2);
+  geo.setAttribute('position', new BufferAttribute(new Float32Array(verts), 3));
+  geo.setIndex(idx);
+  return geo;
+}
+
+function makeLayer(cfg: GrassLayerConfig): Mesh {
+  const geo = bladeGeometry(cfg.segments);
+  const n = Math.max(1, Math.round(Math.sqrt(cfg.size * cfg.size * cfg.density)));
+  const count = n * n;
+  const cell = cfg.size / n;
+  const pos = new Float32Array(count * 2);
+  const rnd = new Float32Array(count * 4);
+  let k = 0;
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      pos[k * 2] = (i + Math.random()) * cell;
+      pos[k * 2 + 1] = (j + Math.random()) * cell;
+      for (let c = 0; c < 4; c++) rnd[k * 4 + c] = Math.random();
+      k++;
+    }
+  }
+  geo.setAttribute('aPos', new InstancedBufferAttribute(pos, 2));
+  geo.setAttribute('aRand', new InstancedBufferAttribute(rnd, 4));
+  geo.instanceCount = count;
+
+  const mat = new ShaderMaterial({
+    uniforms: {
+      ...U,
+      uPatchSize: { value: cfg.size },
+      uFade: { value: new Vector4(...cfg.fade) },
+      uLodWidth: { value: cfg.widthScale },
+      uFarLod: { value: cfg.widthScale > 1.2 ? 1 : 0 },
+    },
+    vertexShader: VERT,
+    fragmentShader: FRAG,
+    side: DoubleSide,
+  });
+  const mesh = new Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
+export class Grass {
+  readonly group = new Group();
+  bladeCount = 0;
+
+  build(layers: GrassLayerConfig[]): void {
+    this.dispose();
+    this.bladeCount = 0;
+    for (const cfg of layers) {
+      const m = makeLayer(cfg);
+      this.bladeCount += (m.geometry as InstancedBufferGeometry).instanceCount;
+      this.group.add(m);
+    }
+  }
+
+  dispose(): void {
+    for (const child of [...this.group.children]) {
+      const m = child as Mesh;
+      m.geometry.dispose();
+      (m.material as ShaderMaterial).dispose();
+      this.group.remove(m);
+    }
+  }
+}
