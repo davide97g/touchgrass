@@ -9,7 +9,7 @@ import {
   Vector4,
 } from 'three';
 import { U } from '../core/uniforms';
-import { COMMON_GLSL } from './common';
+import { COMMON_GLSL, NEAR_FADE_GLSL } from './common';
 
 export interface GrassLayerConfig {
   /** Side of the square patch that wraps around the camera (m). */
@@ -72,6 +72,11 @@ void main() {
   // No grass in the water; short, sparse grass on the shores.
   float shore = smoothstep(0.25, 1.0, feat.g) * (0.6 + 0.4 * step(0.5, r.w));
   fade *= (1.0 - smoothstep(0.2, 0.5, feat.a)) * (1.0 - shore * 0.8);
+  if (uTree.w > 0.0) {
+    float td = length(base - uTree.xy) / uTree.w;
+    fade *= smoothstep(0.5, 0.75, td);
+    h *= mix(0.55, 1.0, smoothstep(0.8, 2.2, td));
+  }
   h *= fade;
 
   float w = uGrassWidth * mix(0.7, 1.3, r.y) * uLodWidth;
@@ -86,13 +91,29 @@ void main() {
   float gust = gustAt(base);
   float sway = swayAt(base);
   float ws = uWindStrength;
+  // The steady push saturates; past a breeze the extra energy goes into motion, not into lying flat.
+  float wsC = min(ws, 1.1);
+  float gs = min(uGustStrength, 1.3);
+  float storm = smoothstep(1.0, 2.6, ws);
   float phase = dot(base, uWindDir) * 0.55;
-  float flutter = sin(uTime * (2.8 + r.y * 2.2) + r.x * 6.2831 - phase);
+  float flutter = sin(uTime * (2.8 + r.y * 2.2 + storm * 4.0) + r.x * 6.2831 - phase);
   float spring = sin(uTime * 1.7 + r.z * 3.0 - phase * 0.4);
-  float windAmt = ws * (0.12 + 0.42 * sway + 0.95 * gust * uGustStrength);
-  windAmt += ws * (0.1 * flutter * (0.35 + gust) + 0.12 * spring * gust * uGustStrength);
+  float windAmt = wsC * (0.12 + 0.42 * sway + 0.95 * gust * gs);
+  windAmt += wsC * (0.1 * flutter * (0.35 + gust) + 0.12 * spring * gust * gs);
   vec2 perp = vec2(-uWindDir.y, uWindDir.x);
-  bend += uWindDir * windAmt + perp * 0.05 * flutter * ws;
+  float sideBend = 0.05 * flutter * wsC;
+  if (storm > 0.0) {
+    // Gale: fast rolling waves race downwind; blades whip low in each crest and spring back past
+    // upright in the trough, swing sideways and shiver at the tips (like tall grass and wheat in a storm).
+    float along = dot(base, uWindDir);
+    float across = dot(base, perp);
+    float w1 = sin(along * 0.38 - uTime * 7.0 + sin(across * 0.09 + uTime * 0.4) * 2.2);
+    float w2 = sin(along * 1.25 - uTime * 10.5 + across * 0.35 + r.x * 2.5);
+    float crest = 0.5 + 0.5 * w1;
+    windAmt += storm * (0.75 * crest * crest * (0.7 + 0.6 * gust) + 0.16 * w2 - 0.3);
+    sideBend += storm * (0.32 * sin(uTime * 2.9 + along * 0.21 + r.y * 6.28) + 0.14 * w2 + 0.1 * flutter);
+  }
+  bend += uWindDir * windAmt + perp * sideBend;
   bend /= uStiffness;
 
   vec2 tuv = (base - uTrailCenter) / uTrailSize + 0.5;
@@ -134,6 +155,7 @@ void main() {
 
 const FRAG = /* glsl */ `
 ${COMMON_GLSL}
+${NEAR_FADE_GLSL}
 uniform float uFarLod;
 uniform vec3 uGrassBase;
 uniform vec3 uGrassMid;
@@ -148,6 +170,7 @@ varying float vVar;
 varying float vPatch;
 
 void main() {
+  nearFade(vWorldPos);
   // Far blades are seen mostly by their sunlit upper halves.
   float t = mix(vT, 0.35 + 0.65 * vT, uFarLod);
   vec3 col = mix(uGrassBase, uGrassMid, smoothstep(0.0, 0.45, t));
@@ -174,7 +197,7 @@ void main() {
   // Gust sheen: blades bending over flash their light side (the anime "wave").
   col += vGust * smoothstep(0.25, 1.0, vT) * uSunColor * uTint * vec3(0.22, 0.26, 0.09);
 
-  col *= cloudShadowAt(vWorldPos.xz);
+  col *= cloudShadowAt(vWorldPos.xz) * treeShadeAt(vWorldPos);
   col *= mix(0.32, 1.0, smoothstep(0.0, 0.55, t));
 
   col = applyFog(col, vWorldPos);

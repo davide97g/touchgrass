@@ -24,9 +24,12 @@ varying vec2 vFlow;
 varying float vSlope;
 
 float waterH(vec2 q) {
-  vec2 a = q * 0.12 - vFlow * uTime * 0.12;
-  vec2 b = q * 0.27 - vFlow * uTime * 0.21 + vec2(0.37, 0.71) + uWindDir * uTime * 0.012;
-  return nz(a).a * 0.6 + nz(b).g * 0.4;
+  // Three slow ripple layers drifting on the breeze, from long swells to fine catspaws.
+  vec2 w = uWindDir * uTime;
+  vec2 a = q * 0.09 - vFlow * uTime * 0.12 + w * 0.006;
+  vec2 b = q * 0.23 + vec2(0.37, 0.71) + w * 0.017;
+  vec2 c = q * 0.61 + vec2(0.13, 0.29) - w * 0.035 + vec2(uTime * 0.011, -uTime * 0.008);
+  return nz(a).a * 0.5 + nz(b).g * 0.32 + nz(c).b * 0.18;
 }
 
 vec3 srgb(vec3 c) { return pow(c, vec3(2.2)); }
@@ -37,8 +40,9 @@ void main() {
   float speed = length(vFlow);
 
   // Ripple normal from two scrolling height layers.
-  float e = 0.12;
-  float amp = 1.2 + uWindStrength * 0.9 + speed * 2.0;
+  float e = 0.08;
+  // Still ponds are nearly mirrors; wind roughens them a little.
+  float amp = 0.45 + uWindStrength * 0.55 + speed * 2.0;
   float dx = waterH(p + vec2(e, 0.0)) - waterH(p - vec2(e, 0.0));
   float dz = waterH(p + vec2(0.0, e)) - waterH(p - vec2(0.0, e));
   vec3 N = normalize(vec3(-dx * amp, 1.0, -dz * amp));
@@ -59,7 +63,7 @@ void main() {
   vec3 sky = mix(uFogColor, uZenith, pow(ry, 0.42));
   // Reflect the real clouds: look up the cloud field where the reflected ray meets the cloud layer.
   float cl = smoothstep(0.01, 0.25, cloudCov2D(vWorldPos.xz + R.xz / max(R.y, 0.06) * (CLOUD_BOTTOM + 500.0)));
-  sky = mix(sky, uAmbient + uSunColor * 0.6, cl * 0.7);
+  sky = mix(sky, mix(uAmbient * 1.1, uAmbient + uSunColor * 0.55, 0.6), cl * 0.55);
   float fres = 0.03 + 0.97 * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
   vec3 col = mix(body, sky, fres);
   alpha = mix(alpha, 1.0, fres);

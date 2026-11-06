@@ -8,13 +8,16 @@ import {
 } from 'three';
 import { sampleNoise } from '../core/noise';
 import { U } from '../core/uniforms';
-import { COMMON_GLSL, terrainHeight } from './common';
+import { COMMON_GLSL, NEAR_FADE_GLSL, terrainHeight } from './common';
+import { CUP_GLSL, discGrid, FLOWER_HEAD_GLSL, SPECIES_SIZE_GLSL } from './flowerHeads';
 import type { FeatureMap } from './Features';
 
 const PATCH = 56;
 
 const VERT = /* glsl */ `
 ${COMMON_GLSL}
+${SPECIES_SIZE_GLSL}
+${CUP_GLSL}
 uniform float uPatchSize;
 uniform float uDensity;
 uniform float uGrassHeight;
@@ -32,6 +35,8 @@ varying float vT;
 varying vec3 vWorldPos;
 varying float vKind;
 varying float vShore;
+varying float vSpecies;
+varying vec3 vHeadN;
 
 void main() {
   vec2 rel = mod(aPos - cameraPosition.xz + 0.5 * uPatchSize, uPatchSize) - 0.5 * uPatchSize;
@@ -41,18 +46,29 @@ void main() {
   // Flowers grow in drifts, not uniformly.
   float drift = nz(base / 70.0 + vec2(0.33, 0.66)).b;
   float show = step(1.0 - uDensity * 0.55, drift) * step(aRand.w, 0.35 + uDensity * 0.65);
+  show = max(show, step(aRand.w, 0.05 * uDensity)); // and a few loners everywhere
   // Wildflowers gather along the shores; none grow in the water.
   vec4 feat = featAt(base);
   float shoreBloom = step(0.18, feat.g) * (1.0 - step(0.8, feat.g)) * step(aRand.w, 0.12 + uDensity * 0.4);
   show = max(show, shoreBloom) * (1.0 - step(0.25, feat.a));
+  if (uTree.w > 0.0) show *= step(1.3, length(base - uTree.xy) / uTree.w);
   vShore = shoreBloom;
   float fade = 1.0 - smoothstep(uPatchSize * 0.38, uPatchSize * 0.5, dist);
-  float h = uGrassHeight * mix(0.75, 1.15, aRand.x) * show * fade;
+  float h = uGrassHeight * mix(1.12, 1.5, aRand.x) * show * fade; // blooms stand above the grass
 
   float gust = gustAt(base);
   float sway = swayAt(base);
-  vec2 bend = uWindDir * uWindStrength * (0.1 + 0.35 * sway + 0.8 * gust * uGustStrength);
-  bend += uWindDir * uWindStrength * 0.08 * sin(uTime * 2.4 + aRand.y * 6.28);
+  float wsC = min(uWindStrength, 1.1);
+  float storm = smoothstep(1.0, 2.6, uWindStrength);
+  vec2 bend = uWindDir * wsC * (0.1 + 0.35 * sway + 0.8 * gust * min(uGustStrength, 1.3));
+  bend += uWindDir * wsC * 0.08 * sin(uTime * 2.4 + aRand.y * 6.28);
+  if (storm > 0.0) {
+    // Same rolling gale waves as the grass: stems whip down and bob back, swing sideways.
+    float along = dot(base, uWindDir);
+    float crest = 0.5 + 0.5 * sin(along * 0.38 - uTime * 7.0 + sin(dot(base, vec2(-uWindDir.y, uWindDir.x)) * 0.09 + uTime * 0.4) * 2.2);
+    bend += uWindDir * storm * (0.6 * crest * crest + 0.12 * sin(uTime * 9.0 + aRand.y * 20.0) - 0.2);
+    bend += vec2(-uWindDir.y, uWindDir.x) * storm * 0.25 * sin(uTime * 3.1 + aRand.y * 6.28);
+  }
   vec2 tuv = (base - uTrailCenter) / uTrailSize + 0.5;
   bend += textureLod(uTrailMap, tuv, 0.0).rg * 1.4;
   float A = clamp(length(bend), 0.0, 1.3);
@@ -64,17 +80,45 @@ void main() {
   float up = A < 1e-3 ? h * t : h * sin(a) / A;
   vec3 p = vec3(base.x, terrainHeight(base), base.y) + vec3(bdir.x * along, up, bdir.y * along);
 
+  // Species grow in patches (one dominant kind per patch, a few strays); the shores have their own.
+  vec2 pc = floor(base / 9.0 + (nz(base / 37.0 + 0.4).rg - 0.5) * 2.5);
+  float patchSp = floor(fract(sin(dot(pc, vec2(41.3, 289.1))) * 15731.7) * 8.0);
+  float stray = floor(fract(aRand.z * 53.17) * 8.0);
+  float msp = fract(aRand.z * 7.31) < 0.72 ? patchSp : stray;
+  // Meadow kinds: daisy, buttercup, poppy, cornflower, cosmos, dandelion, pansy, clover.
+  float meadow = msp < 4.5 ? msp : (msp < 5.5 ? 6.0 : (msp < 6.5 ? 7.0 : 9.0));
+  float k = fract(aRand.z * 7.31);
+  float shoreSp = k < 0.55 ? 8.0 : (k < 0.82 ? 5.0 : 1.0);
+  vSpecies = shoreBloom > 0.5 ? shoreSp : meadow;
+
   if (aCorner.z > 0.5) {
-    // Head: camera-facing billboard at the stem tip.
-    vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
-    vec3 upv = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
-    float s = mix(0.045, 0.075, aRand.z) * step(0.001, h);
-    p += (right * aCorner.x + upv * (aCorner.y * 2.0 - 1.0)) * s;
-    vUv = vec2(aCorner.x, aCorner.y * 2.0 - 1.0);
+    // Head: a real cup facing the sky. It follows the stem as it bends and nods in the wind,
+    // leans a little its own way and a little toward the sun; we see it foreshortened, not face-on.
+    vec2 stemDir = bdir * sin(A);
+    vec3 n = vec3(stemDir.x, cos(A), stemDir.y);
+    float tilt = speciesTilt(vSpecies) * (0.5 + 0.5 * fract(aRand.y * 23.1));
+    float az = aRand.y * 6.2831;
+    // Most blooms turn toward the sun; each keeps some of its own lean.
+    vec2 sunH = normalize(uSunDir.xz + vec2(1e-4)) * step(0.0, uSunDir.y);
+    vec2 own = vec2(cos(az), sin(az));
+    vec2 lean2 = normalize(mix(own, sunH, 0.45) + vec2(1e-4)) * tilt;
+    vec3 lean = vec3(lean2.x, 0.0, lean2.y);
+    float nod = sin(uTime * (1.3 + aRand.x) + aRand.y * 30.0) * 0.06 * (0.3 + uWindStrength) + gust * uGustStrength * uWindStrength * 0.25;
+    lean += vec3(uWindDir.x, 0.0, uWindDir.y) * nod;
+    n = normalize(n + lean);
+    vec3 ref = vec3(cos(az * 3.1), 0.0, sin(az * 3.1));
+    vec3 right = normalize(ref - n * dot(ref, n) + vec3(1e-4, 0.0, 0.0));
+    vec3 fw = cross(n, right);
+    float s = speciesSize(vSpecies) * mix(0.85, 1.15, fract(aRand.z * 13.7)) * step(0.001, h);
+    vec2 q = aCorner.xy;
+    p += (right * q.x + fw * q.y) * s + n * (cupZ(vSpecies, q) + 0.04) * s;
+    vUv = q;
+    vHeadN = n;
   } else {
     float theta = aRand.y * 6.2831;
     p += vec3(cos(theta), 0.0, sin(theta)) * aCorner.x * 0.006 * (1.0 - t * 0.5);
     vUv = vec2(0.0);
+    vHeadN = vec3(0.0, 1.0, 0.0);
   }
 
   vPart = aCorner.z;
@@ -87,6 +131,8 @@ void main() {
 
 const FRAG = /* glsl */ `
 ${COMMON_GLSL}
+${NEAR_FADE_GLSL}
+${FLOWER_HEAD_GLSL}
 uniform vec3 uGrassMid;
 uniform vec3 uGrassBase;
 uniform vec3 uTint;
@@ -96,57 +142,29 @@ varying float vT;
 varying vec3 vWorldPos;
 varying float vKind;
 varying float vShore;
+varying float vSpecies;
+varying vec3 vHeadN;
 
 void main() {
+  nearFade(vWorldPos);
   vec3 col;
   if (vPart > 0.5) {
-    float r = length(vUv);
-    // Petals flutter a little in the wind (visible up close in macro).
-    float ang = atan(vUv.y, vUv.x) + sin(uTime * 2.3 + vKind * 40.0) * 0.07 * (0.4 + uWindStrength);
-    float petals = vKind < 0.4 ? 5.0 : (vKind < 0.8 ? 6.0 : 8.0);
-    float pa = ang * petals / 6.2831853;
-    float pid = floor(pa + 0.5);
-    float pf = pa - pid; // -0.5..0.5 across one petal
-    float edge = 0.5 + 0.5 * sqrt(max(0.0, 1.0 - pf * pf * 4.0));
-    edge *= 0.94 + 0.06 * fract(sin(pid * 12.9898 + vKind * 78.2) * 43758.5);
-    float aa = fwidth(r) * 1.2;
-    if (r > edge + aa * 0.5) discard;
-
-    vec3 petal;
-    float k = fract(vKind * 7.31);
-    if (vShore > 0.5) petal = k < 0.6 ? vec3(0.55, 0.45, 0.92) : vec3(0.98, 0.86, 0.3); // iris-like by the water
-    else if (k < 0.35) petal = vec3(0.97, 0.95, 0.9);
-    else if (k < 0.65) petal = vec3(0.96, 0.62, 0.76);
-    else if (k < 0.88) petal = vec3(0.98, 0.84, 0.3);
-    else petal = vec3(0.78, 0.7, 0.95);
-    petal = pow(petal, vec3(2.2));
-    float rn = r / edge;
-    petal *= 0.92 + 0.12 * fract(sin(pid * 3.7 + vKind * 11.0) * 9137.1); // each petal its own shade
-    petal *= mix(0.82, 1.06, smoothstep(0.2, 0.9, rn));                   // deeper toward the heart
-    petal *= 1.0 - smoothstep(0.035, 0.0, abs(pf)) * 0.12 * smoothstep(0.3, 0.6, rn); // central groove
-    petal *= 1.0 - smoothstep(0.36, 0.5, abs(pf)) * 0.35;                  // shadowed gaps between petals
-
-    // Domed, speckled centre.
-    float cr = 0.24;
-    vec2 cell = floor(vUv * 16.0);
-    float h = fract(sin(dot(cell, vec2(127.1, 311.7)) + vKind * 17.0) * 43758.5);
-    float dotm = step(0.55, h) * smoothstep(0.38, 0.22, length(fract(vUv * 16.0) - 0.5));
-    vec3 centre = pow(mix(vec3(0.92, 0.6, 0.12), vec3(1.0, 0.86, 0.35), dotm), vec3(2.2));
-    centre *= 0.65 + 0.35 * sqrt(max(0.0, 1.0 - (r / cr) * (r / cr)));
-    col = mix(centre, petal, smoothstep(cr - 0.02, cr + 0.02, r));
-
-    vec3 V = normalize(cameraPosition - vWorldPos);
-    vec3 lightCol = uAmbient + uSunColor * 0.9 * max(uSunDir.y + 0.15, 0.0);
-    col *= lightCol;
-    // Backlit petals glow.
-    float back = pow(max(dot(-V, uSunDir), 0.0), 2.0) * smoothstep(cr, 0.8, r);
-    col += uSunColor * petal * back * 0.45;
+    // Petals flutter a touch in the wind.
+    float wob = sin(uTime * 2.3 + vKind * 40.0) * 0.05 * (0.4 + uWindStrength);
+    vec2 q = mat2(cos(wob), -sin(wob), sin(wob), cos(wob)) * vUv;
+    float aa = max(fwidth(length(q)) * 1.2, 0.002);
+    float sp = floor(vSpecies + 0.5);
+    Bloom b = flowerHead(q, sp, fract(vKind * 97.13), aa);
+    if (b.a < 0.5) discard;
+    bool front = dot(cameraPosition - vWorldPos, vHeadN) > 0.0;
+    if (!front) b = backOf(b, q, sp);
+    col = shadeBloom(b, vWorldPos, front ? vHeadN : -vHeadN, uSunDir, uSunColor, uAmbient);
   } else {
     col = mix(uGrassBase, uGrassMid, vT) * uTint;
     col *= uAmbient + uSunColor * 0.7 * max(uSunDir.y + 0.15, 0.0);
     col *= mix(0.4, 1.0, vT);
   }
-  col *= cloudShadowAt(vWorldPos.xz);
+  col *= cloudShadowAt(vWorldPos.xz) * treeShadeAt(vWorldPos);
   col = applyFog(col, vWorldPos);
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
@@ -162,14 +180,15 @@ export class Flowers {
 
   constructor(count: number) {
     const geo = new InstancedBufferGeometry();
-    // Stem: 3 levels x 2 verts; head: 4 verts.
+    // Stem: 3 levels x 2 verts; head: a subdivided disc the shader bends into a cup.
     const c: number[] = [];
     for (let i = 0; i < 3; i++) c.push(-1, i / 2, 0, 1, i / 2, 0);
-    c.push(-1, 0, 1, 1, 0, 1, -1, 1, 1, 1, 1, 1);
+    const disc = discGrid();
+    for (let i = 0; i < disc.xy.length; i += 2) c.push(disc.xy[i], disc.xy[i + 1], 1);
     geo.setAttribute('aCorner', new BufferAttribute(new Float32Array(c), 3));
     // Three needs a position attribute for draw-range bookkeeping.
     geo.setAttribute('position', new BufferAttribute(new Float32Array(c.length), 3));
-    geo.setIndex([0, 1, 2, 1, 3, 2, 2, 3, 4, 3, 5, 4, 6, 7, 8, 7, 9, 8]);
+    geo.setIndex([0, 1, 2, 1, 3, 2, 2, 3, 4, 3, 5, 4, ...disc.index.map((i) => i + 6)]);
 
     const pos = new Float32Array(count * 2);
     const rnd = new Float32Array(count * 4);
@@ -224,7 +243,7 @@ export class Flowers {
       const z = cz + rz;
       const w = this.rnd[i * 4 + 3];
       const drift = sampleNoise(x / 70 + 0.33, z / 70 + 0.66, 2);
-      let show = drift >= 1 - density * 0.55 && w <= 0.35 + density * 0.65;
+      let show = (drift >= 1 - density * 0.55 && w <= 0.35 + density * 0.65) || w <= 0.05 * density;
       const g = features.sample(x, z, 1);
       if (g >= 0.18 && g < 0.8 && w <= 0.12 + density * 0.4) show = true;
       if (features.sample(x, z, 3) >= 0.25) show = false;
@@ -232,11 +251,49 @@ export class Flowers {
       const score = d * (2 - cos);
       if (score < bestScore) {
         bestScore = score;
-        const h = U.uGrassHeight.value * (0.75 + 0.4 * this.rnd[i * 4]);
+        const h = U.uGrassHeight.value * (1.12 + 0.38 * this.rnd[i * 4]);
         best = { x, y: terrainHeight(x, z) + h, z };
       }
     }
     return best;
+  }
+
+  /** Every visible flower head within a ring and view cone (trailer framing). */
+  listNear(
+    cx: number,
+    cz: number,
+    yaw: number,
+    features: FeatureMap,
+    minD: number,
+    maxD: number,
+    minCos: number,
+  ): { x: number; y: number; z: number; d: number; side: number }[] {
+    const out: { x: number; y: number; z: number; d: number; side: number }[] = [];
+    if (!this.mesh.visible) return out;
+    const density = this.mat.uniforms.uDensity.value as number;
+    const fx = -Math.sin(yaw);
+    const fz = -Math.cos(yaw);
+    const P = PATCH;
+    for (let i = 0; i < this.rnd.length / 4; i++) {
+      const rx = ((((this.pos[i * 2] - cx + P / 2) % P) + P) % P) - P / 2;
+      const rz = ((((this.pos[i * 2 + 1] - cz + P / 2) % P) + P) % P) - P / 2;
+      const d = Math.hypot(rx, rz);
+      if (d < minD || d > maxD) continue;
+      const cos = (rx * fx + rz * fz) / d;
+      if (cos < minCos) continue;
+      const x = cx + rx;
+      const z = cz + rz;
+      const w = this.rnd[i * 4 + 3];
+      const drift = sampleNoise(x / 70 + 0.33, z / 70 + 0.66, 2);
+      let show = (drift >= 1 - density * 0.55 && w <= 0.35 + density * 0.65) || w <= 0.05 * density;
+      const g = features.sample(x, z, 1);
+      if (g >= 0.18 && g < 0.8 && w <= 0.12 + density * 0.4) show = true;
+      if (features.sample(x, z, 3) >= 0.25) show = false;
+      if (!show) continue;
+      const h = U.uGrassHeight.value * (1.12 + 0.38 * this.rnd[i * 4]);
+      out.push({ x, y: terrainHeight(x, z) + h, z, d, side: rx * -fz + rz * fx });
+    }
+    return out;
   }
 
   set density(v: number) {

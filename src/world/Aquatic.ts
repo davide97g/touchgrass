@@ -12,6 +12,7 @@ import {
 } from 'three';
 import { U } from '../core/uniforms';
 import { COMMON_GLSL, terrainHeight } from './common';
+import { CUP_GLSL, discGrid, FLOWER_HEAD_GLSL } from './flowerHeads';
 import type { FeatureMap } from './Features';
 
 function mulberry32(seed: number): () => number {
@@ -29,6 +30,7 @@ function mulberry32(seed: number): () => number {
 
 const PAD_VERT = /* glsl */ `
 ${COMMON_GLSL}
+${CUP_GLSL}
 attribute vec2 aCorner;
 attribute vec3 aPos;
 attribute vec4 aParams; // size, rotation, kind (0 pad, 1 lily), seed
@@ -47,9 +49,10 @@ void main() {
     vec2 r = vec2(cos(rot) * aCorner.x - sin(rot) * aCorner.y, sin(rot) * aCorner.x + cos(rot) * aCorner.y);
     p = c + vec3(r.x, 0.0, r.y) * size;
   } else {
-    vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
-    vec3 up = vec3(0.0, 1.0, 0.0);
-    p = c + vec3(0.0, size * 0.8, 0.0) + (right * aCorner.x + up * aCorner.y * 0.8) * size;
+    // Floats open on the water, a real cup of petals facing the sky.
+    vec2 r = vec2(cos(rot) * aCorner.x - sin(rot) * aCorner.y, sin(rot) * aCorner.x + cos(rot) * aCorner.y);
+    float S = size * 1.25;
+    p = c + vec3(r.x * S, (cupZ(10.0, aCorner) + 0.06) * S, r.y * S);
   }
   vUv = aCorner;
   vKind = aParams.z;
@@ -61,6 +64,7 @@ void main() {
 
 const PAD_FRAG = /* glsl */ `
 ${COMMON_GLSL}
+${FLOWER_HEAD_GLSL}
 uniform vec3 uTint;
 varying vec2 vUv;
 varying float vKind;
@@ -84,14 +88,10 @@ void main() {
     float sheen = pow(1.0 - abs(V.y), 4.0) * 0.4;
     col = col * lightCol + uSunColor * sheen * 0.3;
   } else {
-    // Water lily: pointed petals, warm heart.
-    float petals = 0.55 + 0.45 * pow(abs(cos(ang * 4.0)), 0.6);
-    float y = vUv.y * 0.5 + 0.5;
-    if (r > petals || vUv.y < -0.6) discard;
-    vec3 tip = fract(vSeed * 7.3) < 0.5 ? vec3(0.98, 0.72, 0.84) : vec3(0.98, 0.96, 0.92);
-    col = srgb(mix(vec3(1.0, 0.86, 0.35), tip, smoothstep(0.12, 0.4, r)));
-    col *= mix(0.8, 1.05, y);
-    col *= lightCol * 1.1;
+    float aa = max(fwidth(r) * 1.2, 0.002);
+    Bloom b = waterLily(vUv, fract(vSeed * 7.3), aa);
+    if (b.a < 0.5) discard;
+    col = shadeBloom(b, vWorldPos, vec3(0.0, 1.0, 0.0), uSunDir, uSunColor, uAmbient) * 1.05;
   }
   col *= cloudShadowAt(vWorldPos.xz);
   col = applyFog(col, vWorldPos);
@@ -198,12 +198,15 @@ export class Aquatic {
   private pads: Mesh;
   private reeds: Mesh;
   private flies: Points;
+  /** Lily pads (x, y, z, has flower) from the last rebuild, for the trailer's macro shots. */
+  padSpots: { x: number; y: number; z: number; flower: boolean }[] = [];
 
   constructor() {
     const padGeo = new InstancedBufferGeometry();
-    padGeo.setAttribute('aCorner', new BufferAttribute(new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), 2));
-    padGeo.setAttribute('position', new BufferAttribute(new Float32Array(12), 3));
-    padGeo.setIndex([0, 1, 2, 1, 3, 2]);
+    const disc = discGrid();
+    padGeo.setAttribute('aCorner', new BufferAttribute(new Float32Array(disc.xy), 2));
+    padGeo.setAttribute('position', new BufferAttribute(new Float32Array((disc.xy.length / 2) * 3), 3));
+    padGeo.setIndex(disc.index);
     this.pads = new Mesh(
       padGeo,
       new ShaderMaterial({ uniforms: { ...U }, vertexShader: PAD_VERT, fragmentShader: PAD_FRAG, side: DoubleSide }),
@@ -318,6 +321,16 @@ export class Aquatic {
         flyPos.push(p.x + (r() - 0.5) * 3, s.levels[0] + 0.3 + r() * 1.2, p.z + (r() - 0.5) * 3);
         flySeed.push(r(), r(), r(), r());
       }
+    }
+
+    this.padSpots = [];
+    for (let i = 0; i < padPos.length / 3; i++) {
+      if (padPar[i * 4 + 2] > 0.5) {
+        const last = this.padSpots[this.padSpots.length - 1];
+        if (last) last.flower = true;
+        continue;
+      }
+      this.padSpots.push({ x: padPos[i * 3], y: padPos[i * 3 + 1], z: padPos[i * 3 + 2], flower: false });
     }
 
     const setInst = (m: Mesh, pos: number[], par: number[]) => {

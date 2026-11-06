@@ -1,4 +1,4 @@
-import { Color, Data3DTexture, Texture, Vector2, Vector3 } from 'three';
+import { Color, Data3DTexture, Texture, Vector2, Vector3, Vector4 } from 'three';
 import { noiseTexture } from './noise';
 
 /**
@@ -43,6 +43,9 @@ export const U = {
   uNoise3D: { value: new Data3DTexture() as Texture },
   uCloudOffset: { value: new Vector3() },
   uCloudTower: { value: 0.6 },
+
+  uTree: { value: new Vector4(0, 0, 0, 0) },
+  uTreeCanopy: { value: new Vector4(0, 0, 0, 0) },
 
   uPixelRatio: { value: 1 },
 };

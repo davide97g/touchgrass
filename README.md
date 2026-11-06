@@ -30,6 +30,19 @@ deploy/deploy.sh   # build, rsync dist/ to homelab:~/touchgrass/site, (re)start 
 
 Elsewhere: `dist/` is plain static files with relative paths, so any static host works too (Netlify, Vercel, Cloudflare Pages, GitHub Pages).
 
+## Trailer
+
+`/?trailer` plays a ~2:40 scripted, Steam-style trailer in the engine itself: eyes opening in the grass, macro on flowers, the field, swallows against a sunset, a gust, fireflies at night, dawn by a pond, a glowing flower that pulls you in, a fairy pool whose rune stones pulse to an ancient tune, a vortex, a shooting star and the title. Picture and score run off the audio clock, so cuts land on the music.
+
+| Param | Effect |
+| --- | --- |
+| `record` | records canvas + mix with `MediaRecorder` and downloads an `.mp4`/`.webm` at the end |
+| `size=1920x1080` | fixed render size (use with `record`) |
+| `t=80` | start from a given second |
+| `hold` | freeze the clock at `t` (framing checks) |
+
+Space pauses, F toggles fullscreen. Code: `src/trailer/` (`timeline.ts` marks, `Director.ts` camera/light/props, `Score.ts` music and sound design, `props.ts` fireflies, hero blade, glowing flower, rune stones, meteor, title). Post-processing hooks (eyelids, blur, flashes, vortex, title, manual focus) are the `FX` object in `src/post/Post.ts`.
+
 ## Controls
 
 | Key | Action |
@@ -59,11 +72,11 @@ Phones: left thumb walks (floating joystick), right thumb looks.
   - *low*: raymarched volumetric cumulus/stratocumulus (1.3–3.7 km). A tileable 3D Perlin-Worley texture (built on the GPU at startup) shapes them; a two-layer weather map decides where clouds form and how tall they tower, and drifts at two rates so the pattern keeps reshuffling. The noise also scrolls vertically through the layer, so clouds grow, merge and dissolve instead of just sliding. Lighting: sun light march, dual-lobe Henyey-Greenstein (silver linings), powder effect, cheap multiple scattering, aerial perspective into the horizon haze, and an anime ↔ realistic ramp.
   - *mid*: altocumulus patches at 5.6 km, *high*: cirrus streaks at 9.5 km, each on its own sheared wind.
   - Ground cloud shadows and water reflections sample the same weather + noise fields, so they match the sky. Panel: cover, towering, speed (time-lapse), evolution, mid/high amounts, style.
-- **Fairy pools** (`src/world/Features.ts`, `Water.ts`, `Rocks.ts`, `Aquatic.ts`): per 200 m world cell, a chain of pools steps down a slope (the main pool settles in the lowest spot), joined by meandering streams with two small cascades each. Everything is baked into a 1024² half-float map around the player (height carve, shore mask, water level, water mask) that the terrain, grass, flowers, water shader, walking (you can wade, not swim) and audio all read. Water is turquoise-to-teal by real depth, see-through in the shallows, reflects sky and clouds, sparkles, foams at shores and cascades, and throws caustics on the stony bed. Shores carry mossy granite boulders, reeds and cattails, lily pads with water lilies, iris-like flowers, and fireflies over the water at dusk.
+- **Fairy pools** (`src/world/Features.ts`, `Water.ts`, `Rocks.ts`, `Aquatic.ts`): per 200 m world cell, a pond settles in the lowest spot, sometimes with a few smaller ponds in nearby hollows (only where the rim holds the water). Still water only, no streams. Everything is baked into a 1024² half-float map around the player (height carve, shore mask, water level, water mask) that the terrain, grass, flowers, water shader, walking (you can wade, not swim) and audio all read. Water is turquoise-to-teal by real depth, see-through in the shallows, nearly mirror-still with three slow ripple layers that roughen with the wind, reflects sky and clouds, sparkles and foams at the shores. Shores carry mossy granite boulders, reeds and cattails, lily pads with water lilies, iris-like flowers, and fireflies over the water at dusk.
 - **Birds** (`src/world/Birds.ts`): three boids flocks of 3D barn swallows (lofted body, cambered two-joint wings with a lagging, folding hand, forked tail, countershaded navy/cream/rust) orbiting the player at varying distance (sometimes straight overhead), flapping in bursts and banking into turns. They roost when night falls; chirps pan toward a passing flock.
 - **Macro lens** (`src/post/Post.ts`, `Flowers.ts`): a CPU replica of the flower placement finds the nearest bloom ahead, the view eases onto it, a ring stamp in the trail map parts the grass around it, and a depth-of-field pass with GPU autofocus (1×1 ping-pong target, no readback) blurs everything else into bokeh.
 - **Time of day** (`src/world/TimeOfDay.ts`): Noon, Golden hour, Dusk, Misty dawn; every colour, the sun, fog and night factor cross-fade.
-- **Audio** (`src/audio/AudioEngine.ts`): Web Audio only. Wind is shaped brown/pink noise whose level follows the gust at your position; the hiss of grass is panned left and right from gusts sampled either side of you, so you hear a wave travel past. Moving through grass spawns filtered noise grains, footsteps follow the head-bob stride, birds by day, crickets at dusk, a babbling brook near streams, water drops by the pools, and a soft pad swells with the breathing guide.
+- **Audio** (`src/audio/AudioEngine.ts`): Web Audio only. Wind is shaped brown/pink noise whose level follows the gust at your position; the hiss of grass is panned left and right from gusts sampled either side of you, so you hear a wave travel past. Moving through grass spawns filtered noise grains, footsteps follow the head-bob stride, birds by day, crickets at dusk, water drops by the pools, and a soft pad swells with the breathing guide.
 - **Music** (`src/audio/Music.ts`): an endless generative ambient score. Felt piano (stretched partials, hammer noise, darkening decay), detuned pads, a low drone and distant FM bells go through a long generated reverb with tape wobble. Each time of day has its own key, tempo, scale and chord progression; the melody is a slow random walk around a recurring motif. The breathing pad retunes to the current chord.
 - **Quality** (`src/core/quality.ts`): blade counts, LOD, pixel ratio, post-processing (bloom, grade, vignette) per tier.
 

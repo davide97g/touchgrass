@@ -10,7 +10,7 @@ import {
 import { AudioEngine } from '../audio/AudioEngine';
 import { Controller } from '../player/Controller';
 import { TouchControls } from '../player/TouchControls';
-import { Post } from '../post/Post';
+import { FX, Post } from '../post/Post';
 import { BreathGuide } from '../ui/BreathGuide';
 import { Panel } from '../ui/Panel';
 import { Aquatic } from '../world/Aquatic';
@@ -26,10 +26,16 @@ import { Sky } from '../world/Sky';
 import { Terrain } from '../world/Terrain';
 import { TimeOfDay, TIME_PRESETS } from '../world/TimeOfDay';
 import { TrailMap } from '../world/TrailMap';
+import { findTreeSite, Tree } from '../world/Tree';
 import { Water } from '../world/Water';
 import { GRASS_TYPES, params, type GrassTypeName, type TimeName } from './params';
 import { detectTier, grassLayers, TIER_ORDER, TIERS, type Tier } from './quality';
 import { U } from './uniforms';
+
+/** Something that flies the camera instead of the player (the trailer). Returns the depth-of-field amount. */
+export interface CameraDirector {
+  update(dt: number, camera: PerspectiveCamera): number;
+}
 
 export class Experience {
   readonly renderer: WebGLRenderer;
@@ -44,17 +50,18 @@ export class Experience {
   private readonly clock = new Timer();
   private readonly terrain = new Terrain();
   private readonly grass = new Grass();
-  private readonly sky = new Sky();
-  private readonly trail = new TrailMap();
+  readonly sky = new Sky();
+  readonly trail = new TrailMap();
   readonly features = new FeatureMap();
   private readonly water = new Water();
   private readonly rocks = new Rocks();
-  private readonly aquatic = new Aquatic();
-  private readonly birds = new Birds();
+  readonly aquatic = new Aquatic();
+  readonly birds = new Birds();
+  private readonly tree: Tree;
   private readonly clouds: Clouds;
   private readonly bufferSize = new Vector2();
-  private flowers: Flowers | null = null;
-  private particles: Particles | null = null;
+  flowers: Flowers | null = null;
+  particles: Particles | null = null;
   private post: Post | null = null;
 
   tier: Tier;
@@ -76,6 +83,13 @@ export class Experience {
   private macroTarget: { x: number; y: number; z: number } | null = null;
   private macroAim = 0;
 
+  /** When set, flies the camera (trailer) and the player controller sits idle. */
+  director: CameraDirector | null = null;
+  /** Fixed drawing-buffer size (for recording), or null to follow the window. */
+  fixedSize: { w: number; h: number } | null = null;
+  /** Director-chosen spot where hands part the grass (trail map ring stamp). */
+  trailPart: { x: number; z: number; strength: number } | null = null;
+
   onFirstFrame: (() => void) | null = null;
   onWanderChange: ((on: boolean) => void) | null = null;
   private firstFrame = true;
@@ -92,7 +106,7 @@ export class Experience {
     this.camera = new PerspectiveCamera(params.move.fov, 1, 0.05, 2500);
     this.clouds = new Clouds(this.renderer, this.sky.cloudLit, this.sky.cloudShade);
     this.controller = new Controller(canvas);
-    this.controller.canStand = (x, z) => this.features.waterDepth(x, z) < 0.42;
+    this.controller.canStand = (x, z) => this.features.waterDepth(x, z) < 0.42 && this.tree.clear(x, z);
     this.features.onChange = () => {
       this.water.rebuild(this.features.active);
       this.rocks.rebuild(this.features.active);
@@ -100,6 +114,8 @@ export class Experience {
     };
     this.features.update(this.controller.position.x, this.controller.position.z);
     this.faceNearestPool();
+    const p0 = this.controller.position;
+    this.tree = new Tree(findTreeSite(p0.x, p0.z, this.controller.yaw, this.features));
     this.controller.onStep = (i) => this.audio.step(i);
     this.controller.onUserMove = () => {
       if (this.started && this.controller.wanderActive) this.setWander(false);
@@ -115,6 +131,7 @@ export class Experience {
       this.rocks.mesh,
       this.aquatic.group,
       this.birds.mesh,
+      this.tree.group,
     );
 
     this.applyGrass();
@@ -236,7 +253,7 @@ export class Experience {
     U.uStiffness.value = g.stiffness;
   }
 
-  private applyWind(): void {
+  applyWind(): void {
     const w = params.wind;
     const a = (w.direction * Math.PI) / 180;
     U.uWindDir.value.set(Math.cos(a), Math.sin(a));
@@ -245,13 +262,13 @@ export class Experience {
     U.uGustSpeed.value = w.gustSpeed;
   }
 
-  private applyAtmosphere(): void {
+  applyAtmosphere(): void {
     U.uCloudCover.value = params.atmosphere.clouds;
     U.uCloudShadow.value = params.atmosphere.cloudShadows;
     this.tod.fogScale = params.atmosphere.fog;
   }
 
-  private applyFlowers(): void {
+  applyFlowers(): void {
     if (this.flowers) {
       this.flowers.mesh.visible = params.flowers.enabled;
       this.flowers.density = params.flowers.density;
@@ -302,10 +319,15 @@ export class Experience {
     this.clouds.steps = cfg.cloudSteps;
   }
 
+  /** After a camera cut: drop temporal history that would smear across the jump. */
+  cut(): void {
+    this.clouds.reset();
+  }
+
   private resize(): void {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    const dpr = Math.min(window.devicePixelRatio || 1, TIERS[this.tier].maxDpr);
+    const w = this.fixedSize?.w ?? window.innerWidth;
+    const h = this.fixedSize?.h ?? window.innerHeight;
+    const dpr = this.fixedSize ? 1 : Math.min(window.devicePixelRatio || 1, TIERS[this.tier].maxDpr);
     this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
@@ -329,6 +351,10 @@ export class Experience {
     U.uTime.value = this.elapsed;
 
     this.tod.update(dt);
+    if (this.director) {
+      this.frameScene(dt, this.director.update(dt, this.camera));
+      return;
+    }
     this.macroAmt += ((this.macro ? 1 : 0) - this.macroAmt) * Math.min(1, dt * 3);
     const e = this.macroAmt * this.macroAmt * (3 - 2 * this.macroAmt);
     const fov = params.move.fov + (this.macroFov - params.move.fov) * e;
@@ -356,7 +382,11 @@ export class Experience {
     }
     this.breath.update(dt);
     this.controller.update(dt, this.camera);
+    this.frameScene(dt, e);
+  }
 
+  /** Everything after the camera is placed: world updates, audio, render. `e` is the depth-of-field amount. */
+  private frameScene(dt: number, e: number): void {
     const p = this.controller.position;
     const cam = this.camera.position;
     this.features.update(p.x, p.z);
@@ -364,7 +394,11 @@ export class Experience {
     this.birds.update(dt, cam.x, cam.z, params.birds ? this.tod.night : 1);
     this.clouds.render(this.renderer, this.camera, dt);
     this.sky.update(cam.x, cam.y, cam.z, this.clouds.texture, this.bufferSize);
-    const part = this.macro && this.macroTarget ? { x: this.macroTarget.x, z: this.macroTarget.z, strength: 0.9 } : null;
+    const part = this.director
+      ? this.trailPart
+      : this.macro && this.macroTarget
+        ? { x: this.macroTarget.x, z: this.macroTarget.z, strength: 0.9 }
+        : null;
     this.trail.update(this.renderer, dt, p.x, p.z, this.controller.velocity.x, this.controller.velocity.y, this.controller.crouch, part);
 
     if (this.audio.running) {
@@ -390,7 +424,7 @@ export class Experience {
       });
     }
 
-    this.renderer.toneMappingExposure = this.tod.exposure;
+    this.renderer.toneMappingExposure = this.tod.exposure * FX.exposure;
     if (this.post) this.post.render(this.elapsed, params.post.bloom * this.tod.bloom * 0.6, params.post.vignette + e * 0.4, e);
     else this.renderer.render(this.scene, this.camera);
 
@@ -422,7 +456,7 @@ export class Experience {
     this.panel.setStats(this.grass.bladeCount, this.fps, this.tier);
 
     // Step down one tier if we stay well under 40 fps (never while the tab is settling).
-    if (!this.autoTier || this.elapsed < 5 || this.elapsed - this.lastTierChange < 6) return;
+    if (!this.autoTier || this.director || this.elapsed < 5 || this.elapsed - this.lastTierChange < 6) return;
     this.lowFpsStreak = this.fps < 40 ? this.lowFpsStreak + 1 : 0;
     const idx = TIER_ORDER.indexOf(this.tier);
     if (this.lowFpsStreak >= 2 && idx > 0) {

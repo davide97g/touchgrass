@@ -33,6 +33,12 @@ const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
 export class AudioEngine {
   ctx: AudioContext | null = null;
   private master!: GainNode;
+  /** Final mix (after the compressor), for extra sources (trailer score) and recording. */
+  out!: GainNode;
+  /** Pre-compressor sum: other sound sources can join the mix here. */
+  get input(): GainNode {
+    return this.master;
+  }
   private buses!: { wind: GainNode; grass: GainNode; nature: GainNode; pad: GainNode; music: GainNode };
   private music: Music | null = null;
   private white!: AudioBuffer;
@@ -85,7 +91,16 @@ export class AudioEngine {
     comp.release.value = 0.4;
     this.master = ctx.createGain();
     this.master.gain.value = 0;
-    this.master.connect(comp).connect(ctx.destination);
+    // Brick-wall-ish limiter at the very end so big moments never clip.
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -2.5;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.002;
+    limiter.release.value = 0.15;
+    this.out = ctx.createGain();
+    this.out.gain.value = 0.92;
+    this.master.connect(comp).connect(limiter).connect(this.out).connect(ctx.destination);
 
     const bus = () => {
       const g = ctx.createGain();
@@ -109,6 +124,14 @@ export class AudioEngine {
     this.nextBird = ctx.currentTime + 2;
     this.setVolumes(true);
     void ctx.resume();
+  }
+
+  /** A MediaStream of the final mix, for recording. */
+  captureStream(): MediaStream | null {
+    if (!this.ctx) return null;
+    const dest = this.ctx.createMediaStreamDestination();
+    this.out.connect(dest);
+    return dest.stream;
   }
 
   setVolumes(fadeIn = false): void {

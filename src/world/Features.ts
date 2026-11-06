@@ -10,8 +10,8 @@ import { U } from '../core/uniforms';
 import { setFeatureSampler, smoothstep, terrainBase } from './common';
 
 /**
- * Fairy pools: chains of clear pools stepping down a slope, joined by small
- * meandering streams with little cascades. Generated deterministically per
+ * Fairy pools: a clear pond in the lowest hollow of a world cell, sometimes with
+ * a few smaller ponds in nearby dips. Still water only. Generated deterministically per
  * world cell, then baked into a player-centred map the GPU samples for terrain
  * carving, grass suppression and water depth; the CPU reads the same map.
  */
@@ -68,12 +68,6 @@ function cellSeed(i: number, j: number): number {
   return (Math.imul(i, 0x1f1f1f1f) ^ Math.imul(j, 0x5bd1e995) ^ 0x9e3779b9) >>> 0;
 }
 
-/** Water level along a stream: mostly flat runs broken by two small cascades. */
-function cascade(s: number): number {
-  const c = 0.5 * smoothstep(0.26, 0.31, s) + 0.5 * smoothstep(0.63, 0.68, s);
-  return 0.25 * s + 0.75 * c;
-}
-
 const cellCache = new Map<string, CellFeatures>();
 
 function genCell(ci: number, cj: number): CellFeatures {
@@ -102,82 +96,33 @@ function genCell(ci: number, cj: number): CellFeatures {
   const main: Pool = { x: bx, z: bz, r: 6 + r() * 6, level: bh - 0.2, seed: Math.floor(r() * 1e9) };
   const chain: Pool[] = [main];
 
-  // Smaller pools step up the slope from it.
+  // A few smaller ponds nearby, wherever the ground naturally dips (no streams: still water only).
   const nUp = 1 + Math.floor(r() * 3);
-  let cur = main;
   for (let k = 0; k < nUp; k++) {
-    const e = 2;
-    const gx = terrainBase(cur.x + e, cur.z) - terrainBase(cur.x - e, cur.z);
-    const gz = terrainBase(cur.x, cur.z + e) - terrainBase(cur.x, cur.z - e);
-    const gl = Math.hypot(gx, gz) || 1;
-    const turn = (r() - 0.5) * 1.1;
-    const dx = (gx / gl) * Math.cos(turn) - (gz / gl) * Math.sin(turn);
-    const dz = (gx / gl) * Math.sin(turn) + (gz / gl) * Math.cos(turn);
+    const ang = r() * Math.PI * 2;
     const pr = 2.4 + r() * 3.2;
-    const step = cur.r + pr + 7 + r() * 11;
-    const x = cur.x + dx * step;
-    const z = cur.z + dz * step;
-    const lvl = Math.max(terrainBase(x, z) - 0.2, cur.level + 0.45 + r() * 0.5);
-    const p: Pool = { x, z, r: pr, level: lvl, seed: Math.floor(r() * 1e9) };
-    chain.push(p);
-    cur = p;
+    const dist = main.r + pr + 10 + r() * 16;
+    let bx2 = main.x + Math.cos(ang) * dist;
+    let bz2 = main.z + Math.sin(ang) * dist;
+    // Roll downhill a little so it settles in a hollow.
+    for (let it = 0; it < 6; it++) {
+      const e = 2;
+      const gx = terrainBase(bx2 + e, bz2) - terrainBase(bx2 - e, bz2);
+      const gz = terrainBase(bx2, bz2 + e) - terrainBase(bx2, bz2 - e);
+      bx2 -= gx * 1.5;
+      bz2 -= gz * 1.5;
+    }
+    const lvl = terrainBase(bx2, bz2) - 0.2;
+    // Only keep it where the rim around it is not lower than the water (no ponds hanging on slopes).
+    let rimOk = true;
+    for (let i = 0; i < 8 && rimOk; i++) {
+      const a2 = (i / 8) * Math.PI * 2;
+      if (terrainBase(bx2 + Math.cos(a2) * pr * 1.4, bz2 + Math.sin(a2) * pr * 1.4) < lvl + 0.05) rimOk = false;
+    }
+    const clear = chain.every((o) => Math.hypot(o.x - bx2, o.z - bz2) > o.r + pr + 6);
+    if (rimOk && clear) chain.push({ x: bx2, z: bz2, r: pr, level: lvl, seed: Math.floor(r() * 1e9) });
   }
   out.pools.push(...chain);
-
-  // Streams from each upper pool down to the one below it.
-  for (let k = chain.length - 1; k > 0; k--) {
-    const up = chain[k];
-    const lo = chain[k - 1];
-    const dx = lo.x - up.x;
-    const dz = lo.z - up.z;
-    const len = Math.hypot(dx, dz);
-    const ux = dx / len;
-    const uz = dz / len;
-    const sx = up.x + ux * up.r * 0.7;
-    const sz = up.z + uz * up.r * 0.7;
-    const ex = lo.x - ux * lo.r * 0.7;
-    const ez = lo.z - uz * lo.r * 0.7;
-    const bend = (r() - 0.5) * len * 0.45;
-    const cx = (sx + ex) / 2 - uz * bend;
-    const cz = (sz + ez) / 2 + ux * bend;
-    const pts: { x: number; z: number }[] = [];
-    const levels: number[] = [];
-    const N = 32;
-    for (let i = 0; i <= N; i++) {
-      const t = i / N;
-      const a = (1 - t) * (1 - t);
-      const b = 2 * (1 - t) * t;
-      const c = t * t;
-      pts.push({ x: a * sx + b * cx + c * ex, z: a * sz + b * cz + c * ez });
-      levels.push(up.level + (lo.level - up.level) * cascade(t));
-    }
-    const halfW = 0.55 + r() * 0.6;
-    out.streams.push({ pts, levels, halfW, seed: Math.floor(r() * 1e9) });
-
-    // Boulders at each cascade lip and along the banks.
-    for (const s of [0.28, 0.65]) {
-      const i = Math.round(s * N);
-      const p = pts[i];
-      const q = pts[Math.min(N, i + 1)];
-      const tx = q.x - p.x;
-      const tz = q.z - p.z;
-      const tl = Math.hypot(tx, tz) || 1;
-      for (const side of [-1, 1]) {
-        out.rocks.push({
-          x: p.x + (-tz / tl) * side * (halfW + 0.3 + r() * 0.5),
-          z: p.z + (tx / tl) * side * (halfW + 0.3 + r() * 0.5),
-          s: 0.6 + r() * 0.7, rot: r() * 6.28, squash: 0.55 + r() * 0.3, sink: 0.35,
-        });
-      }
-    }
-    for (let i = 0; i < 6; i++) {
-      const t = r();
-      const p = pts[Math.floor(t * N)];
-      const side = r() < 0.5 ? -1 : 1;
-      const off = halfW * (0.6 + r() * 2.2) * side;
-      out.rocks.push({ x: p.x + off * -uz, z: p.z + off * ux, s: 0.2 + r() * 0.5, rot: r() * 6.28, squash: 0.5 + r() * 0.4, sink: 0.3 });
-    }
-  }
 
   // Granite rocks scattered around the rims, some half-drowned.
   for (const p of chain) {

@@ -1,6 +1,7 @@
 import './styles.css';
 import { Experience } from './core/Experience';
 import { params } from './core/params';
+import { bootTrailer } from './trailer';
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -27,8 +28,14 @@ function boot(): void {
   const toastEl = $('#toast');
   const coarse = matchMedia('(pointer: coarse)').matches;
 
+  const trailer = new URLSearchParams(location.search).has('trailer');
+  if (trailer && !new URLSearchParams(location.search).has('q')) params.quality = 'high';
   const exp = new Experience(canvas);
   if (import.meta.env.DEV) (window as unknown as { __exp: Experience }).__exp = exp;
+  if (trailer) {
+    bootTrailer(exp);
+    return;
+  }
 
   // ---- toast ----
   let toastTimer = 0;

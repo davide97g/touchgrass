@@ -131,6 +131,8 @@ interface Bird {
   flap: number;
   flapT: number;
   roll: number;
+  /** Place in a loose formation when the flock is guided along a scripted path. */
+  off: Vector3;
 }
 
 interface Flock {
@@ -242,6 +244,29 @@ export class Birds {
   private initialised = false;
   /** Nearest bird to the listener, for panning chirps. */
   nearest = { dist: Infinity, x: 0, z: 0 };
+  /** Optional scripted flight (trailer): where a flock's formation centre should be, and how fast it moves. */
+  guide: ((flock: number) => { p: Vector3; v: Vector3 } | null) | null = null;
+
+  /** Centre of a flock (world space). */
+  flockCentre(i: number): Vector3 {
+    return this.flocks[i]?.centre ?? this.tmp.set(0, -1e4, 0);
+  }
+
+  /** Move a whole flock into formation around a point, flying with velocity v (trailer cuts). */
+  warpFlock(i: number, p: Vector3, v: Vector3): void {
+    const fl = this.flocks[i];
+    if (!fl) return;
+    for (const b of fl.birds) {
+      b.p.copy(p).add(b.off);
+      b.v.copy(v);
+    }
+    fl.centre.copy(p);
+  }
+
+  /** One bird's position (world space). */
+  birdPos(flock: number, i: number): Vector3 | null {
+    return this.flocks[flock]?.birds[i]?.p ?? null;
+  }
 
   constructor() {
     const geo = birdGeometry();
@@ -266,6 +291,7 @@ export class Birds {
           flap: 1,
           flapT: Math.random() * 3,
           roll: 0,
+          off: new Vector3((Math.random() - 0.5) * 9, (Math.random() - 0.5) * 3, (Math.random() - 0.5) * 9),
         });
       }
       this.flocks.push({ birds, angle, speed: (f % 2 ? -1 : 1) * (0.045 + Math.random() * 0.03), t: Math.random() * 100, centre });
@@ -285,7 +311,9 @@ export class Birds {
     const up = new Vector3(0, 1, 0);
     let idx = 0;
 
-    for (const fl of this.flocks) {
+    for (let fi = 0; fi < this.flocks.length; fi++) {
+      const fl = this.flocks[fi];
+      const g = this.guide?.(fi) ?? null;
       fl.t += dt;
       fl.angle += fl.speed * dt;
       // Orbit radius breathes, so flocks sometimes sweep right overhead.
@@ -312,26 +340,34 @@ export class Birds {
             if (d < 3.2) sep.add(this.tmp.subVectors(b.p, o.p).multiplyScalar(1 / Math.max(d * d, 0.05)));
           }
         }
+        const prevDir = this.tmp.copy(b.v).normalize();
+        const prevX = prevDir.x;
+        const prevZ = prevDir.z;
+        if (g) {
+          // Scripted: hold a loose formation around the guide, still swerving apart a little.
+          const want = new Vector3().copy(g.p).add(b.off).sub(b.p).multiplyScalar(1.6).add(g.v).addScaledVector(sep, 2);
+          b.v.lerp(want, 1 - Math.exp(-dt * 2.5));
+          b.p.addScaledVector(b.v, dt);
+        }
         const acc = new Vector3();
-        if (n > 0) {
+        if (!g && n > 0) {
           acc.add(ali.multiplyScalar(1 / n).sub(b.v).multiplyScalar(0.9));
           acc.add(coh.multiplyScalar(1 / n).sub(b.p).multiplyScalar(0.35));
         }
-        acc.add(sep.multiplyScalar(9));
+        if (!g) acc.add(sep.multiplyScalar(9));
         acc.add(this.tmp.subVectors(target, b.p).normalize().multiplyScalar(3.2));
         // Keep above the land.
         const ground = terrainHeight(b.p.x, b.p.z);
         if (b.p.y < ground + 12) acc.y += (ground + 12 - b.p.y) * 1.5;
 
-        const prevDir = this.tmp.copy(b.v).normalize();
-        const prevX = prevDir.x;
-        const prevZ = prevDir.z;
-        b.v.addScaledVector(acc, dt);
-        const sp = b.v.length();
-        const want = 9.5 + 1.5 * Math.sin(b.phase * 30 + fl.t);
-        b.v.multiplyScalar(Math.min(Math.max(sp, 6.5), 12.5) / sp);
-        b.v.lerp(b.v.clone().normalize().multiplyScalar(want), dt * 0.5);
-        b.p.addScaledVector(b.v, dt);
+        if (!g) {
+          b.v.addScaledVector(acc, dt);
+          const sp = b.v.length();
+          const want = 9.5 + 1.5 * Math.sin(b.phase * 30 + fl.t);
+          b.v.multiplyScalar(Math.min(Math.max(sp, 6.5), 12.5) / sp);
+          b.v.lerp(b.v.clone().normalize().multiplyScalar(want), dt * 0.5);
+          b.p.addScaledVector(b.v, dt);
+        }
 
         // Flap in bursts, then glide.
         b.flapT -= dt;

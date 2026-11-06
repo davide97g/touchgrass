@@ -29,6 +29,8 @@ export class TrailMap {
   private readonly mat: ShaderMaterial;
   private readonly center = new Vector2();
   private initialised = false;
+  /** Scales how hard the body presses the grass (the trailer turns it off for close-ups). */
+  bodyScale = 1;
 
   constructor() {
     const opts = {
@@ -126,7 +128,7 @@ export class TrailMap {
     u.uPlayer.value.set((x - cx) / SIZE + 0.5, (z - cz) / SIZE + 0.5);
     u.uVel.value.set(vx, vz);
     u.uRadius.value = (0.45 + crouch * 0.35) / SIZE;
-    u.uStrength.value = 0.85 + crouch * 0.35;
+    u.uStrength.value = (0.85 + crouch * 0.35) * this.bodyScale;
     if (part) {
       u.uPart.value.set((part.x - cx) / SIZE + 0.5, (part.z - cz) / SIZE + 0.5);
       u.uPartR.value = 0.55 / SIZE;

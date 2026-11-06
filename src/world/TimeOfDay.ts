@@ -3,7 +3,7 @@ import type { TimeName } from '../core/params';
 import { U } from '../core/uniforms';
 import type { Sky } from './Sky';
 
-interface Preset {
+export interface Preset {
   elev: number; // degrees
   azim: number; // degrees, 0 = straight ahead of spawn (-Z)
   sun: string;
@@ -97,8 +97,13 @@ export class TimeOfDay {
 
   set(name: TimeName, seconds = 5): void {
     this.name = name;
+    this.setPreset(TIME_PRESETS[name], seconds);
+  }
+
+  /** Cross-fade to an arbitrary preset (the trailer uses a few that are not in the menu). */
+  setPreset(p: Preset, seconds = 5): void {
     this.from = copyState(this.cur);
-    this.to = toState(TIME_PRESETS[name]);
+    this.to = toState(p);
     this.k = 0;
     this.duration = Math.max(0.001, seconds);
   }

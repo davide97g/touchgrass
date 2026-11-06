@@ -27,6 +27,8 @@ uniform vec3 uZenith;
 uniform sampler3D uNoise3D;
 uniform vec3 uCloudOffset;
 uniform float uCloudTower;
+uniform vec4 uTree;       // the great tree: trunk base x, z, ground y, root radius (0 = none)
+uniform vec4 uTreeCanopy; // its crown: centre xyz, horizontal radius
 
 vec4 nz(vec2 uv) { return textureLod(uNoise, uv, 0.0); }
 
@@ -96,6 +98,20 @@ float cloudShadowAt(vec2 p) {
   float ly = max(uSunDir.y, 0.12);
   vec2 q = p + uSunDir.xz / ly * (CLOUD_BOTTOM + 500.0);
   return mix(1.0, 0.52, smoothstep(0.01, 0.22, cloudCov2D(q)) * uCloudShadow);
+}
+
+// Dappled shade under the great tree's crown, wherever the sun's ray crosses it.
+float treeShadeAt(vec3 wp) {
+  if (uTreeCanopy.w <= 0.0) return 1.0;
+  vec3 L = uSunDir;
+  float s = max(uTreeCanopy.y - wp.y, 0.0) / max(L.y, 0.08);
+  vec2 q = wp.xz + L.xz * s - uTreeCanopy.xz;
+  float d = length(q) / uTreeCanopy.w;
+  if (d > 1.4) return 1.0;
+  vec2 w = uWindDir * sin(uTime * 0.8) * 0.12 * uWindStrength;
+  float holes = smoothstep(0.7, 0.8, nz((q + w) / 3.5 + 0.3).a + d * 0.22);
+  float edge = 1.0 - smoothstep(0.78, 1.12, d + (nz(q / 11.0 + 0.6).g - 0.5) * 0.4);
+  return mix(1.0, 0.4, edge * (1.0 - holes) * smoothstep(0.0, 0.2, L.y));
 }
 
 vec3 fogColorFor(vec3 viewDir) {
@@ -176,3 +192,17 @@ export function findSpawn(): { x: number; z: number; yaw: number } {
   }
   return best;
 }
+
+/**
+ * Fragment-only: things right in front of the eye dissolve instead of being cut by the near plane.
+ * A fine dither that the near-blur in post turns into a soft, out-of-focus veil.
+ */
+export const NEAR_FADE_GLSL = /* glsl */ `
+void nearFade(vec3 wp) {
+  float d = length(wp - cameraPosition);
+  if (d > 0.55) return;
+  float a = smoothstep(0.06, 0.55, d);
+  float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  if (n > a) discard;
+}
+`;
