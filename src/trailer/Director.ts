@@ -89,6 +89,8 @@ export class Director implements CameraDirector {
   onEnd: (() => void) | null = null;
   /** Debug: freeze the clock at the start offset. */
   hold = false;
+  /** Debug: pin the camera for stills (window.__dir.pose in dev). */
+  pose: { pos: Vector3; look: Vector3; fov: number; focus: number } | null = null;
   private score: Score | null = null;
   private t0 = 0;
   private T = 0;
@@ -1137,6 +1139,13 @@ export class Director implements CameraDirector {
     }
     FX.focus = c.focus;
     FX.dofScale = this.dofScale;
+    if (this.pose) {
+      camera.position.copy(this.pose.pos);
+      camera.lookAt(this.pose.look);
+      camera.fov = this.pose.fov;
+      camera.updateProjectionMatrix();
+      FX.focus = this.pose.focus;
+    }
 
     // Lens flare: the low sun in (or near) frame, while it clears the far hills.
     const sd = U.uSunDir.value;

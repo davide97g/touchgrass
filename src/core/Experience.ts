@@ -8,6 +8,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import { AudioEngine } from '../audio/AudioEngine';
+import { Bells } from '../audio/Bells';
 import { Controller } from '../player/Controller';
 import { TouchControls } from '../player/TouchControls';
 import { FX, Post } from '../post/Post';
@@ -28,8 +29,15 @@ import { TimeOfDay, TIME_PRESETS } from '../world/TimeOfDay';
 import { TrailMap } from '../world/TrailMap';
 import { findTreeSite, Tree } from '../world/Tree';
 import { Water } from '../world/Water';
+import { Ambient } from '../world/realm/Ambient';
+import { Fauna } from '../world/realm/Fauna';
+import { Forest } from '../world/realm/Forest';
+import { CASTLE, ISLANDS, Sky as SkyRealm } from '../world/realm/Skyward';
+import { Structures } from '../world/realm/Structures';
+import { initRealm, type Realm } from '../world/realm/init';
+import { Shadows } from './Shadows';
 import { GRASS_TYPES, params, type GrassTypeName, type TimeName } from './params';
-import { detectTier, grassLayers, TIER_ORDER, TIERS, type Tier } from './quality';
+import { detectTier, grassLayers, probeTier, TIER_ORDER, TIERS, type Tier } from './quality';
 import { U } from './uniforms';
 
 /** Something that flies the camera instead of the player (the trailer). Returns the depth-of-field amount. */
@@ -48,6 +56,8 @@ export class Experience {
   readonly tod: TimeOfDay;
 
   private readonly clock = new Timer();
+  /** The planned world (city, villages, roads, hills): built first, everything samples it. */
+  readonly realm: Realm = initRealm();
   private readonly terrain = new Terrain();
   private readonly grass = new Grass();
   readonly sky = new Sky();
@@ -59,6 +69,12 @@ export class Experience {
   readonly birds = new Birds();
   private readonly tree: Tree;
   private readonly clouds: Clouds;
+  readonly structures: Structures;
+  readonly forest: Forest;
+  readonly fauna: Fauna;
+  readonly skyward: SkyRealm;
+  private readonly bells: Bells;
+  readonly shadows = new Shadows();
   private readonly bufferSize = new Vector2();
   flowers: Flowers | null = null;
   particles: Particles | null = null;
@@ -72,6 +88,8 @@ export class Experience {
   private fpsTime = 0;
   private fps = 60;
   private lowFpsStreak = 0;
+  /** Resolution ceiling lowered step by step once the lowest tier is still too slow. */
+  private dprCap = Infinity;
   private lastTierChange = 0;
   private densityTimer = 0;
   private needsResize = false;
@@ -82,6 +100,7 @@ export class Experience {
   macroFov = 10;
   private macroTarget: { x: number; y: number; z: number } | null = null;
   private macroAim = 0;
+  private flyFov = 0;
 
   /** When set, flies the camera (trailer) and the player controller sits idle. */
   director: CameraDirector | null = null;
@@ -92,21 +111,26 @@ export class Experience {
 
   onFirstFrame: (() => void) | null = null;
   onWanderChange: ((on: boolean) => void) | null = null;
+  onFlightChange: ((flying: boolean) => void) | null = null;
   private firstFrame = true;
 
   constructor(canvas: HTMLCanvasElement) {
-    this.renderer = new WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+    // The low tier draws straight to the canvas (no post, so no multisampled target):
+    // give that canvas MSAA, or phones get stair-stepped blades and pixelated leaves.
+    const startTier = params.quality === 'auto' ? probeTier() : (params.quality as Tier);
+    this.renderer = new WebGLRenderer({ canvas, antialias: !TIERS[startTier].post, powerPreference: 'high-performance' });
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = NeutralToneMapping;
     this.renderer.toneMappingExposure = 1;
 
     this.autoTier = params.quality === 'auto';
-    this.tier = this.autoTier ? detectTier(this.renderer.getContext() as WebGL2RenderingContext) : (params.quality as Tier);
+    this.tier = startTier;
 
-    this.camera = new PerspectiveCamera(params.move.fov, 1, 0.05, 2500);
+    this.camera = new PerspectiveCamera(params.move.fov, 1, 0.05, 14000);
     this.clouds = new Clouds(this.renderer, this.sky.cloudLit, this.sky.cloudShade);
     this.controller = new Controller(canvas);
-    this.controller.canStand = (x, z) => this.features.waterDepth(x, z) < 0.42 && this.tree.clear(x, z);
+    this.controller.canStand = (x, z) =>
+      this.features.waterDepth(x, z) < 0.42 && this.tree.clear(x, z) && this.realm.map.solidAt(x, z) < 0.5 && this.forest.clear(x, z);
     this.features.onChange = () => {
       this.water.rebuild(this.features.active);
       this.rocks.rebuild(this.features.active);
@@ -118,11 +142,32 @@ export class Experience {
     this.tree = new Tree(findTreeSite(p0.x, p0.z, this.controller.yaw, this.features));
     this.controller.onStep = (i) => this.audio.step(i);
     this.controller.onUserMove = () => {
-      if (this.started && this.controller.wanderActive) this.setWander(false);
+      if (this.started && (this.controller.wanderActive || (this.controller.flying && this.controller.flight.auto))) this.setWander(false);
     };
     if (matchMedia('(pointer: coarse)').matches) new TouchControls(canvas, this.controller);
 
+    this.structures = new Structures(this.realm);
+    this.skyward = new SkyRealm();
+    this.forest = new Forest(this.realm, this.features, this.skyward.treeSpots);
+    this.fauna = new Fauna(this.realm, this.features, this.forest);
+    this.bells = new Bells(this.audio, this.realm.plan.bell);
+    this.controller.waypoints = () => [
+      ...this.realm.sites.map((s) => ({ name: s.name, x: s.x, z: s.z, r: s.r + (s.kind === 'pillar' ? 120 : 70), alt: s.level + (s.kind === 'pillar' ? 320 : s.kind === 'city' ? 70 : 45) })),
+      { name: 'the floating castle', x: CASTLE.x, z: CASTLE.z, r: CASTLE.R + 260, alt: CASTLE.bottom + 260 },
+      ...ISLANDS.filter((i) => i.R > 30).map((i) => ({ name: 'a floating island', x: i.x, z: i.z, r: i.R + 70, alt: i.y + 25 })),
+    ];
+    this.controller.onLanded = () => this.onFlightChange?.(false);
+    for (const root of [this.structures.group, this.forest.group, this.fauna.group, this.tree.group, this.rocks.mesh]) this.shadows.addRoot(root);
+
     this.tod = new TimeOfDay(this.sky, params.atmosphere.time);
+    this.scene.add(
+      this.terrain.far,
+      this.structures.group,
+      this.forest.group,
+      this.fauna.group,
+      this.skyward.group,
+      new Ambient(this.realm).group,
+    );
     this.scene.add(
       this.sky.mesh,
       this.terrain.mesh,
@@ -215,7 +260,34 @@ export class Experience {
     this.macroFov = Math.min(35, Math.max(5, this.macroFov * (1 + deltaY * 0.0012)));
   }
 
+  // ---------- flight ----------
+
+  /** Take off, or come down to land if already flying. */
+  toggleFlight(): void {
+    const c = this.controller;
+    if (c.flying) {
+      c.flight.auto = false;
+      c.land();
+      return;
+    }
+    if (this.macro) this.setMacro(false);
+    c.startFlight(this.camera);
+    this.onFlightChange?.(true);
+  }
+
+  get flying(): boolean {
+    return this.controller.flying;
+  }
+
   setWander(on: boolean): void {
+    const c = this.controller;
+    if (c.flying) {
+      // In the air, "wander" is the autopilot.
+      if (c.flight.auto === on || c.flight.mode !== 'fly') return;
+      c.flight.setAuto(on, c.yaw, c.pitch);
+      this.onWanderChange?.(on);
+      return;
+    }
     if (this.controller.wanderActive === on) return;
     this.controller.wanderActive = on;
     if (on) this.controller.wander.reset(this.controller.yaw);
@@ -287,6 +359,7 @@ export class Experience {
   private setTier(t: Tier): void {
     if (t === this.tier && this.grass.bladeCount > 0) return;
     this.tier = t;
+    this.dprCap = Infinity;
     this.lastTierChange = this.elapsed;
     this.buildForTier();
     this.needsResize = true;
@@ -315,6 +388,13 @@ export class Experience {
 
     this.post?.dispose();
     this.post = cfg.post ? new Post(this.renderer, this.scene, this.camera) : null;
+    const a2c = cfg.post || this.renderer.getContext().getContextAttributes()?.antialias === true;
+    this.tree.setAlphaToCoverage(a2c);
+    // On the bare canvas (low tier) alpha-to-coverage leaves bright speckles in distant crowns: hard alpha test there.
+    this.forest?.setAlphaToCoverage(cfg.post);
+    this.forest?.setDetail(this.tier === 'high' ? 150 : this.tier === 'medium' ? 110 : 70);
+    this.shadows.enabled = this.tier !== 'low';
+    this.shadows.setSize(this.tier === 'high' ? 2048 : 1536);
     this.clouds.scale = cfg.cloudScale;
     this.clouds.steps = cfg.cloudSteps;
   }
@@ -327,7 +407,7 @@ export class Experience {
   private resize(): void {
     const w = this.fixedSize?.w ?? window.innerWidth;
     const h = this.fixedSize?.h ?? window.innerHeight;
-    const dpr = this.fixedSize ? 1 : Math.min(window.devicePixelRatio || 1, TIERS[this.tier].maxDpr);
+    const dpr = this.fixedSize ? 1 : Math.min(window.devicePixelRatio || 1, TIERS[this.tier].maxDpr, this.dprCap);
     this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
@@ -357,12 +437,14 @@ export class Experience {
     }
     this.macroAmt += ((this.macro ? 1 : 0) - this.macroAmt) * Math.min(1, dt * 3);
     const e = this.macroAmt * this.macroAmt * (3 - 2 * this.macroAmt);
-    const fov = params.move.fov + (this.macroFov - params.move.fov) * e;
+    // In flight the view widens with speed.
+    this.flyFov += ((this.controller.flying ? Math.min(16, this.controller.flight.speed * 0.25) + 4 : 0) - this.flyFov) * Math.min(1, dt * 1.5);
+    const fov = params.move.fov + this.flyFov + (this.macroFov - params.move.fov) * e;
     if (Math.abs(fov - this.camera.fov) > 0.01) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
     }
-    this.controller.lookScale = fov / params.move.fov;
+    this.controller.lookScale = Math.min(1, fov / params.move.fov);
     // Ease the view onto the chosen flower for a moment, then hand control back.
     if (this.macroTarget && this.macroAim > 0) {
       this.macroAim -= dt;
@@ -391,6 +473,14 @@ export class Experience {
     const cam = this.camera.position;
     this.features.update(p.x, p.z);
     this.terrain.update(cam.x, cam.z);
+    const sunY = U.uSunDir.value.y;
+    U.uLights.value = Math.min(1, this.tod.night * 1.15 + Math.max(0, Math.min(1, (0.2 - sunY) / 0.25)) * 0.55);
+    this.structures.update(dt, this.elapsed);
+    const alt = cam.y - p.y;
+    const high = this.controller.flying && alt > 25;
+    this.fauna.update(dt, high ? 1e6 : p.x, high ? 1e6 : p.z, this.controller.speed);
+    this.skyward.update(dt, this.elapsed);
+    this.forest.update(cam.x, cam.z);
     this.birds.update(dt, cam.x, cam.z, params.birds ? this.tod.night : 1);
     this.clouds.render(this.renderer, this.camera, dt);
     this.sky.update(cam.x, cam.y, cam.z, this.clouds.texture, this.bufferSize);
@@ -399,10 +489,13 @@ export class Experience {
       : this.macro && this.macroTarget
         ? { x: this.macroTarget.x, z: this.macroTarget.z, strength: 0.9 }
         : null;
-    this.trail.update(this.renderer, dt, p.x, p.z, this.controller.velocity.x, this.controller.velocity.y, this.controller.crouch, part);
+    const skim = this.controller.flying && alt < 4;
+    const trailV = this.controller.flying && !skim ? 0 : 1;
+    this.trail.update(this.renderer, dt, p.x, p.z, this.controller.velocity.x * trailV, this.controller.velocity.y * trailV, this.controller.crouch, part);
 
     if (this.audio.running) {
       const yaw = this.controller.yaw;
+      this.bells.update(dt, p.x, p.z, yaw);
       const rx = Math.cos(yaw);
       const rz = -Math.sin(yaw);
       const wd = U.uWindDir.value;
@@ -411,8 +504,8 @@ export class Experience {
         speed: this.controller.speed,
         crouch: this.controller.crouch,
         grassHeight: params.grass.height,
-        windStrength: params.wind.strength,
-        gust: gustAt(p.x, p.z) * params.wind.gust,
+        windStrength: params.wind.strength + (this.controller.flying ? Math.min(1.6, this.controller.flight.speed * 0.03 + Math.min(1, alt / 200) * 0.3) : 0),
+        gust: gustAt(p.x, p.z) * params.wind.gust + (this.controller.flying ? Math.min(0.8, this.controller.flight.speed * 0.012) : 0),
         gustLeft: gustAt(p.x - rx * 12, p.z - rz * 12) * params.wind.gust,
         gustRight: gustAt(p.x + rx * 12, p.z + rz * 12) * params.wind.gust,
         windPan: -(wd.x * rx + wd.y * rz),
@@ -423,6 +516,13 @@ export class Experience {
         ...this.waterAndBirdAudio(p.x, p.z, rx, rz),
       });
     }
+
+    // Sun shadows over the area in front of the camera.
+    const ce = this.camera.matrixWorld.elements;
+    const fl = Math.hypot(ce[8], ce[10]) || 1;
+    const fwdX = -ce[8] / fl;
+    const fwdZ = -ce[10] / fl;
+    this.shadows.render(this.renderer, cam.x + fwdX * 35, cam.y, cam.z + fwdZ * 35);
 
     this.renderer.toneMappingExposure = this.tod.exposure * FX.exposure;
     if (this.post) this.post.render(this.elapsed, params.post.bloom * this.tod.bloom * 0.6, params.post.vignette + e * 0.4, e);
@@ -462,6 +562,12 @@ export class Experience {
     if (this.lowFpsStreak >= 2 && idx > 0) {
       this.lowFpsStreak = 0;
       this.setTier(TIER_ORDER[idx - 1]);
+    } else if (this.lowFpsStreak >= 2 && this.renderer.getPixelRatio() > 1) {
+      // Already on the lowest tier: trade sharpness for frame rate, down to 1x.
+      this.lowFpsStreak = 0;
+      this.lastTierChange = this.elapsed;
+      this.dprCap = Math.max(1, this.renderer.getPixelRatio() - 0.25);
+      this.needsResize = true;
     }
   }
 }

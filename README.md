@@ -4,6 +4,34 @@ An endless anime-style grassland in the browser. Walk through it, crouch into it
 
 Static website: Vite + TypeScript + three.js (WebGL2, custom GLSL). No backend, no assets to download; the sky, terrain, grass and the whole soundscape are procedural.
 
+## The realm
+
+The field is no longer only a field. Around the spawn lies one hand-planned world, inspired by the look of floating-castle fantasy anime:
+
+- **Lumenhall**, the starting city: a ring wall with round towers and gatehouses, ring and radial cobbled streets, ~150 procedurally built houses (stone, plaster and half-timber, slate, teal and terracotta roofs, shutters, flower boxes, chimneys), a market around the plaza, a bell tower that tolls every couple of minutes, and the **gate of light** at its heart, with turning rune rings and a column of light at dusk.
+- **Windmere** (windmills and a sheep pasture) and **Hearthbrook** (a horse pasture), farming villages on the roads.
+- **Watcher’s Rise**: a broken colonnade and a cracked watchtower on a raised hill.
+- **Shardfield**: a field of giant glowing crystals.
+- **Last Watch**: a tower where the mountain road gives out under the **Skyreach Range**, the ring of snow peaks that closes the world.
+- **The floating castle**: twenty-one stacked tiers, each a little landscape, held by pillars, shedding waterfalls into the void, lit window by window at night. Grassy islands drift closer in.
+- Roads (King’s Road, the mountain road, village lanes) with lamps near the city and rune milestones further out; forests of fir, oak and birch; herds of sheep, horses, deer and boars that graze, wander, look up at you and bolt if you rush them.
+- **Blossom Hollow** (a shrine among cherry trees, petals drifting), **the Pillar of Ascent** (a labyrinth tower over 550 m tall with a great door between braziers), **the Old Ring** (standing stones around a rune altar).
+- Farmsteads along the country roads (house, barn, hay, carts, hens, a fenced yard), fields of wheat, greens and lavender in neat rows around them and the villages, scarecrows, signposts at every road end.
+- Chimney smoke, campfires with sparks and a flickering glow, butterflies by day, cats in the city streets, hens in the yards.
+- A compass strip with the landmarks and their distance, and a banner when you enter a new place.
+- **Flight** (V): a launch throws you into the air; then you fly where you look, with a glide, banking turns, a wider view and louder wind as you speed up. Land with V again (you glide on until there is solid ground). G in the air starts the autopilot, a sightseeing tour that circles the city, villages, tower, islands and the floating castle while following the land; any input takes back control. Code: `src/player/Flight.ts`.
+- **Fast travel** (Q, or the pin button): a list of every place with its distance; pick one (or press its number) and you open your eyes there.
+
+- **Grown trees**: every tree in the realm is a parametric tree in the same technique as the great tree (tapered, kinked bark tubes with root flare, a crown of camera-facing leaf cards from a hand-painted atlas), grown by rules taken from the real species: pedunculate oak (short massive trunk, sinuous scaffold limbs, broad dome), Norway spruce (single leader, whorls of drooping branches turning up at the tips, needle fronds), silver birch (white bark with lenticels and a black fissured foot, ascending limbs, hanging twigs), Somei-yoshino cherry (low split into wide limbs, an umbrella of five-petalled blossom, petals carpeting the ground) and hazel-like shrubs. Several variants per species, full detail near the walker and a lighter version further out, dissolving into each other.
+- **Sun shadows**: one shadow map follows the walker; houses, walls, trees, animals and rocks cast onto the grass, roads, walls and leaves (off on the low tier).
+- **Floating islands**: torn-out pieces of land with a domed meadow of real grass blades, a deep body of bedded rock narrowing into stalactites, roots hanging from the lip, trees and ruins on top.
+- **Houses**: thick tiled roofs with ridge caps, barge boards and fascias, recessed windows with frames, glazing bars and stone lintels, dressed corner stones, door surrounds and steps; rain streaks, worn plaster and lichen on the tiles.
+
+- **Mountains up close**: bedded, jointed rock with lichen; dry alpine turf with sun-bleached blades; snow with wind ripples, blue shade and glints; no grass on rock or under snow.
+- **Walking with weight**: climbing slows past ~20°, crawls near 40°, stops past 45° where you slide back down; step off a drop and you fall.
+
+Everything is still procedural and asset-free. Code: `src/world/realm/` (`World.ts` the layout, `Realm.ts` the baked plan map, `city.ts`/`sites.ts` the generators, `kit.ts` the building kit, `Structures.ts` the shared shader, `Forest.ts`, `Island.ts`, `Fauna.ts`, `Skyward.ts`), `src/world/flora/Arbor.ts` (tree growth, leaf atlas, bark and leaf shaders), `src/core/Shadows.ts`, `src/ui/Zones.ts`, `src/audio/Bells.ts`. The plan map (height change, paved, solid, paving kind) is sampled by the terrain, grass, flowers, walking and animals exactly like the pond feature map.
+
 ## Run
 
 ```bash
@@ -49,12 +77,15 @@ Space pauses, F toggles fullscreen. Code: `src/trailer/` (`timeline.ts` marks, `
 | --- | --- |
 | WASD / arrows | walk |
 | mouse | look (click the field to capture the cursor, Esc to free it) |
-| Shift | hurry |
+| Shift | hurry; keep holding to break into a long stride |
 | C (toggle) / Ctrl (hold) | sink into the grass |
 | Z / hold right mouse | macro lens (finds a flower, parts the grass, depth of field); scroll to zoom |
 | B | breathing guide (4 in, 2 hold, 6 out) |
 | G | wander hands-free |
 | T | next time of day |
+| V | fly: take off (thrown ~55 m up), V again to land |
+| in flight | W/S along your gaze (look down to dive, up to climb), A/D sideways, Space up, C/Ctrl down, Shift faster, G autopilot |
+| Q | travel: pick a place and go there |
 | H | settings panel |
 | N | music on/off |
 | M | mute |

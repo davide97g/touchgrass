@@ -52,6 +52,8 @@ void main() {
   float shoreBloom = step(0.18, feat.g) * (1.0 - step(0.8, feat.g)) * step(aRand.w, 0.12 + uDensity * 0.4);
   show = max(show, shoreBloom) * (1.0 - step(0.25, feat.a));
   if (uTree.w > 0.0) show *= step(1.3, length(base - uTree.xy) / uTree.w);
+  vec4 rl = realmAt(base);
+  show *= step(rl.g, 0.12) * step(rl.b, 0.05) * step(mountainMask(base), 0.2);
   vShore = shoreBloom;
   float fade = 1.0 - smoothstep(uPatchSize * 0.38, uPatchSize * 0.5, dist);
   float h = uGrassHeight * mix(1.12, 1.5, aRand.x) * show * fade; // blooms stand above the grass
@@ -164,7 +166,7 @@ void main() {
     col *= uAmbient + uSunColor * 0.7 * max(uSunDir.y + 0.15, 0.0);
     col *= mix(0.4, 1.0, vT);
   }
-  col *= cloudShadowAt(vWorldPos.xz) * treeShadeAt(vWorldPos);
+  col *= cloudShadowAt(vWorldPos.xz) * treeShadeAt(vWorldPos) * sunShadow(vWorldPos);
   col = applyFog(col, vWorldPos);
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>

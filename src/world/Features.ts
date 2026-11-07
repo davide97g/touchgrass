@@ -70,6 +70,19 @@ function cellSeed(i: number, j: number): number {
 
 const cellCache = new Map<string, CellFeatures>();
 
+let poolFilter: ((p: Pool) => boolean) | null = null;
+/** The realm vetoes ponds that would drown a road, a house or a mountainside. Set before the first cell is generated. */
+export function setPoolFilter(fn: (p: Pool) => boolean): void {
+  poolFilter = fn;
+  cellCache.clear();
+}
+
+/** Pools of one world cell (for placing things that must stay dry). */
+export function cellPools(ci: number, cj: number): Pool[] {
+  return genCell(ci, cj).pools;
+}
+export const FEATURE_CELL = CELL;
+
 function genCell(ci: number, cj: number): CellFeatures {
   const key = `${ci},${cj}`;
   const cached = cellCache.get(key);
@@ -121,6 +134,13 @@ function genCell(ci: number, cj: number): CellFeatures {
     }
     const clear = chain.every((o) => Math.hypot(o.x - bx2, o.z - bz2) > o.r + pr + 6);
     if (rimOk && clear) chain.push({ x: bx2, z: bz2, r: pr, level: lvl, seed: Math.floor(r() * 1e9) });
+  }
+  if (poolFilter && !chain.every(poolFilter)) {
+    // Drop the whole group if its main pool is vetoed; otherwise just the offending ponds.
+    if (!poolFilter(chain[0])) return out;
+    const keep = chain.filter(poolFilter);
+    chain.length = 0;
+    chain.push(...keep);
   }
   out.pools.push(...chain);
 

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>touch grass</title>
-    <meta name="description" content="An endless anime grassland in your browser. Walk through it, feel the wind roll across the field, and breathe." />
+    <meta name="description" content="An anime realm in your browser: endless grass, a walled city, villages, ruins, mountains and a castle floating in the sky. Walk through it and breathe." />
     <meta name="theme-color" content="#1450b8" />
     <meta property="og:type" content="website" />
     <meta property="og:title" content="touch grass" />
@@ -34,7 +34,7 @@
       <div class="landing-inner">
         <p class="kicker" lang="ja">草に触れる</p>
         <h1>touch grass</h1>
-        <p class="tag">An endless field and a little wind.<br />Walk slowly. Breathe.</p>
+        <p class="tag">Fields, a city of stone, a castle adrift in the sky.<br />Walk slowly. Breathe.</p>
         <button id="enter" class="enter" type="button" disabled>
           <span class="enter-label">gathering the wind…</span>
         </button>
@@ -43,13 +43,15 @@
       <dl class="legend">
         <div class="desk"><dt>WASD</dt><dd>walk</dd></div>
         <div class="desk"><dt>mouse</dt><dd>look</dd></div>
-        <div class="desk"><dt>shift</dt><dd>hurry</dd></div>
+        <div class="desk"><dt>shift</dt><dd>hurry (hold to stride)</dd></div>
         <div class="desk"><dt>C</dt><dd>sink into the grass</dd></div>
         <div class="desk"><dt>Z / right mouse</dt><dd>macro lens</dd></div>
         <div class="desk"><dt>B</dt><dd>breathe</dd></div>
         <div class="desk"><dt>G</dt><dd>wander</dd></div>
         <div class="desk"><dt>T</dt><dd>time of day</dd></div>
         <div class="desk"><dt>N</dt><dd>music</dd></div>
+        <div class="desk"><dt>V</dt><dd>fly</dd></div>
+        <div class="desk"><dt>Q</dt><dd>travel</dd></div>
         <div class="desk"><dt>H</dt><dd>settings</dd></div>
         <div class="touch"><dt>left thumb</dt><dd>walk</dd></div>
         <div class="touch"><dt>right thumb</dt><dd>look</dd></div>
@@ -74,6 +76,12 @@
       </button>
       <button type="button" data-act="sound" title="Sound (M)" aria-label="Toggle sound">
         <svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z" /><path class="wave" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" /></svg>
+      </button>
+      <button type="button" data-act="fly" title="Fly (V)" aria-label="Fly">
+        <svg viewBox="0 0 24 24"><path d="M12 13c-2-4-6-6-10-6 2 3 4 6 10 8 6-2 8-5 10-8-4 0-8 2-10 6z" /><path d="M12 15v4" /></svg>
+      </button>
+      <button type="button" data-act="travel" title="Travel (Q)" aria-label="Travel">
+        <svg viewBox="0 0 24 24"><path d="M12 21s-6.5-5.6-6.5-11A6.5 6.5 0 0 1 18.5 10c0 5.4-6.5 11-6.5 11z" /><circle cx="12" cy="10" r="2.4" /></svg>
       </button>
       <button type="button" data-act="settings" title="Settings (H)" aria-label="Settings">
         <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>

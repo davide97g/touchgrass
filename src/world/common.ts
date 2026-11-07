@@ -29,6 +29,12 @@ uniform vec3 uCloudOffset;
 uniform float uCloudTower;
 uniform vec4 uTree;       // the great tree: trunk base x, z, ground y, root radius (0 = none)
 uniform vec4 uTreeCanopy; // its crown: centre xyz, horizontal radius
+uniform sampler2D uRealm; // the planned world: r = height change, g = paved, b = solid, a = paving kind
+uniform vec4 uRealmBox;   // centre x, z, size, enabled
+uniform float uLights;
+uniform sampler2D uShadowMap;
+uniform mat4 uShadowMatrix;
+uniform vec4 uShadowParams;
 
 vec4 nz(vec2 uv) { return textureLod(uNoise, uv, 0.0); }
 
@@ -39,14 +45,48 @@ vec4 featAt(vec2 p) {
   return textureLod(uFeat, uv, 0.0);
 }
 
+vec4 realmAt(vec2 p) {
+  vec2 uv = (p - uRealmBox.xy) / uRealmBox.z + 0.5;
+  if (uRealmBox.w < 0.5 || uv.x <= 0.0 || uv.y <= 0.0 || uv.x >= 1.0 || uv.y >= 1.0) return vec4(0.0);
+  return textureLod(uRealm, uv, 0.0);
+}
+
+// The ring of mountains that closes the realm: ridged noise rising past ~1.3 km from the centre.
+float mountainMask(vec2 p) {
+  float d = length(p);
+  return smoothstep(1300.0, 2500.0, d + (nz(p / 2900.0 + vec2(0.41, 0.83)).r - 0.5) * 900.0);
+}
+float ridgeN(float v) { v = 1.0 - abs(v * 2.0 - 1.0); return v * v; }
+float mountainsAt(vec2 p) {
+  float m = mountainMask(p);
+  if (m <= 0.0) return 0.0;
+  float n1 = nz(p / 3400.0 + vec2(0.3, 0.6)).r;
+  float r1 = mix(n1, ridgeN(n1), 0.55);
+  float r2 = ridgeN(nz(p / 1500.0 + vec2(0.1, 0.4)).b);
+  float r3 = nz(p / 420.0 + vec2(0.7, 0.2)).b;
+  return m * m * (r1 * 520.0 + r2 * 150.0 * (0.4 + r1) + r3 * 30.0 + 20.0);
+}
+
+// Mountain cover shared by the terrain and the grass, so blades never stand on rock or snow.
+// ny = up component of the ground normal.
+float alpineRock(vec2 p, float ny) {
+  float rn = nz(p / 37.0).a;
+  return 1.0 - smoothstep(0.62, 0.84, ny + (rn - 0.5) * 0.2);
+}
+float alpineSnow(vec2 p, float y, float ny) {
+  float rn = nz(p / 37.0).a;
+  float bn = nz(p / 11.0 + 0.3).g;
+  return smoothstep(282.0, 300.0, y + (rn - 0.5) * 70.0 + ny * 25.0 + (bn - 0.5) * 30.0) * smoothstep(0.45, 0.6, ny + 0.15 + (bn - 0.5) * 0.1);
+}
+
 float terrainBase(vec2 p) {
   float h = (nz(p / 1100.0).r - 0.5) * 46.0;
   h += (nz(p / 330.0 + vec2(0.37, 0.11)).g - 0.5) * 9.0;
   h += (nz(p / 90.0 + vec2(0.71, 0.53)).b - 0.5) * 1.6;
-  return h;
+  return h + mountainsAt(p);
 }
 
-float terrainHeight(vec2 p) { return terrainBase(p) + featAt(p).r; }
+float terrainHeight(vec2 p) { return terrainBase(p) + featAt(p).r + realmAt(p).r; }
 
 // Big gust fronts that roll across the field along the wind direction.
 float gustAt(vec2 p) {
@@ -114,27 +154,81 @@ float treeShadeAt(vec3 wp) {
   return mix(1.0, 0.4, edge * (1.0 - holes) * smoothstep(0.0, 0.2, L.y));
 }
 
+// Sun shadows from houses, trees and animals near the walker: 1 = lit, down to ~0.5 in shade.
+float shadowTap(vec2 uv, float z) {
+  return step(z - uShadowParams.w, texture(uShadowMap, uv).r);
+}
+float sunShadow(vec3 wp) {
+  if (uShadowParams.z < 0.5) return 1.0;
+  vec4 sp = uShadowMatrix * vec4(wp, 1.0);
+  vec3 s = sp.xyz * 0.5 + 0.5;
+  vec2 e = min(s.xy, 1.0 - s.xy);
+  float edge = smoothstep(0.0, 0.08, min(e.x, e.y));
+  if (edge <= 0.0 || s.z >= 1.0) return 1.0;
+  float t = uShadowParams.x;
+  // Rotated-grid PCF: soft, shimmer-free edges.
+  float lit = shadowTap(s.xy, s.z) * 0.2;
+  lit += shadowTap(s.xy + vec2(-0.7, -1.3) * t, s.z) * 0.2;
+  lit += shadowTap(s.xy + vec2(1.3, -0.7) * t, s.z) * 0.2;
+  lit += shadowTap(s.xy + vec2(0.7, 1.3) * t, s.z) * 0.2;
+  lit += shadowTap(s.xy + vec2(-1.3, 0.7) * t, s.z) * 0.2;
+  float k = uShadowParams.y * smoothstep(0.0, 0.15, uSunDir.y);
+  return mix(1.0, mix(1.0, 0.4, k), (1.0 - lit) * edge);
+}
+
 vec3 fogColorFor(vec3 viewDir) {
   float sunAmt = pow(max(dot(viewDir, uSunDir), 0.0), 6.0);
   return uFogColor + uSunColor * sunAmt * 0.22;
 }
 
-vec3 applyFog(vec3 col, vec3 wp) {
+vec3 applyFogK(vec3 col, vec3 wp, float k);
+vec3 applyFog(vec3 col, vec3 wp) { return applyFogK(col, wp, 1.0); }
+
+// k scales the haze (things high in the sky sit above most of it).
+vec3 applyFogK(vec3 col, vec3 wp, float k) {
   vec3 d = wp - cameraPosition;
   float dist = length(d);
-  float f = 1.0 - exp(-pow(dist * uFogDensity, 1.35));
+  // Haze thins with altitude, so mountain flanks fade into blue while peaks stay readable.
+  float hk = exp(-max(0.5 * (wp.y + cameraPosition.y) - 25.0, 0.0) / 150.0);
+  float f = 1.0 - exp(-pow(dist * uFogDensity * hk * k, 1.35));
   return mix(col, fogColorFor(d / max(dist, 1e-4)), clamp(f, 0.0, 1.0));
 }
 `;
+
+export function mountainMask(x: number, z: number): number {
+  const d = Math.hypot(x, z);
+  return smoothstep(1300, 2500, d + (sampleNoise(x / 2900 + 0.41, z / 2900 + 0.83, 0) - 0.5) * 900);
+}
+
+const ridgeN = (v: number) => {
+  const r = 1 - Math.abs(v * 2 - 1);
+  return r * r;
+};
+
+export function mountainsAt(x: number, z: number): number {
+  const m = mountainMask(x, z);
+  if (m <= 0) return 0;
+  const n1 = sampleNoise(x / 3400 + 0.3, z / 3400 + 0.6, 0);
+  const r1 = n1 + (ridgeN(n1) - n1) * 0.55;
+  const r2 = ridgeN(sampleNoise(x / 1500 + 0.1, z / 1500 + 0.4, 2));
+  const r3 = sampleNoise(x / 420 + 0.7, z / 420 + 0.2, 2);
+  return m * m * (r1 * 520 + r2 * 150 * (0.4 + r1) + r3 * 30 + 20);
+}
 
 export function terrainBase(x: number, z: number): number {
   let h = (sampleNoise(x / 1100, z / 1100, 0) - 0.5) * 46;
   h += (sampleNoise(x / 330 + 0.37, z / 330 + 0.11, 1) - 0.5) * 9;
   h += (sampleNoise(x / 90 + 0.71, z / 90 + 0.53, 2) - 0.5) * 1.6;
-  return h;
+  return h + mountainsAt(x, z);
 }
 
 let featureDh: ((x: number, z: number) => number) | null = null;
+let realmDh: ((x: number, z: number) => number) | null = null;
+
+/** The realm map registers itself here so CPU heights include roads, plazas and hills. */
+export function setRealmSampler(fn: (x: number, z: number) => number): void {
+  realmDh = fn;
+}
 
 /** The feature map registers itself here so CPU heights include pools and streams. */
 export function setFeatureSampler(fn: (x: number, z: number) => number): void {
@@ -142,7 +236,7 @@ export function setFeatureSampler(fn: (x: number, z: number) => number): void {
 }
 
 export function terrainHeight(x: number, z: number): number {
-  return terrainBase(x, z) + (featureDh ? featureDh(x, z) : 0);
+  return terrainBase(x, z) + (featureDh ? featureDh(x, z) : 0) + (realmDh ? realmDh(x, z) : 0);
 }
 
 export function smoothstep(a: number, b: number, x: number): number {

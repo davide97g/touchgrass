@@ -46,6 +46,9 @@ varying vec3 vWorldPos;
 varying float vGust;
 varying float vVar;
 varying float vPatch;
+varying float vCrop;
+varying float vCropKind;
+varying float vAlpine;
 
 vec2 hash22(vec2 p) {
   p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
@@ -65,6 +68,7 @@ void main() {
   vec2 tile = floor(base / uPatchSize);
   vec4 r = fract(aRand + vec4(hash22(tile), hash22(tile + 17.0)));
 
+  vAlpine = 0.0;
   float clump = nz(base / 40.0).a;
   float h = uGrassHeight * (1.0 + (r.x - 0.5) * 2.0 * uGrassHeightVar) * mix(0.6, 1.25, clump);
   float fade = smoothstep(uFade.x, uFade.y, dist) * (1.0 - smoothstep(uFade.z, uFade.w, dist));
@@ -72,6 +76,19 @@ void main() {
   // No grass in the water; short, sparse grass on the shores.
   float shore = smoothstep(0.25, 1.0, feat.g) * (0.6 + 0.4 * step(0.5, r.w));
   fade *= (1.0 - smoothstep(0.2, 0.5, feat.a)) * (1.0 - shore * 0.8);
+  // Roads, plazas and buildings: none under walls, short and sparse along the verges.
+  vec4 rl = realmAt(base);
+  fade *= 1.0 - smoothstep(0.35, 0.75, rl.g + (r.w - 0.5) * 0.35);
+  fade *= 1.0 - smoothstep(0.05, 0.35, rl.b);
+  h *= mix(1.0, 0.4, smoothstep(0.02, 0.45, rl.g));
+  // Crop fields: blades in neat rows, recoloured (wheat, greens, lavender).
+  vCrop = smoothstep(1.6, 1.9, rl.a) * (1.0 - smoothstep(0.02, 0.1, rl.g));
+  vCropKind = rl.a;
+  if (vCrop > 0.0) {
+    float row = abs(fract(base.x / 1.1) - 0.5);
+    fade *= mix(1.0, smoothstep(0.34, 0.2, row), vCrop);
+    h *= mix(1.0, rl.a < 2.5 ? 1.35 : rl.a < 3.5 ? 0.75 : 0.95, vCrop);
+  }
   if (uTree.w > 0.0) {
     float td = length(base - uTree.xy) / uTree.w;
     fade *= smoothstep(0.5, 0.75, td);
@@ -81,6 +98,21 @@ void main() {
 
   float w = uGrassWidth * mix(0.7, 1.3, r.y) * uLodWidth;
   float ground = terrainHeight(base);
+  // Thin out on the high slopes.
+  float alpine = smoothstep(110.0, 220.0, ground + (r.x - 0.5) * 40.0);
+  h *= 1.0 - alpine * 0.55;
+  vAlpine = alpine;
+  // No blades on bare rock or under snow (same masks as the terrain paint).
+  float mmk = mountainMask(base);
+  if (mmk > 0.0) {
+    float e = 1.5;
+    float gx = terrainHeight(base + vec2(e, 0.0)) - ground;
+    float gz = terrainHeight(base + vec2(0.0, e)) - ground;
+    float ny = e / length(vec3(gx, e, gz));
+    float bare = max(alpineRock(base, ny), alpineSnow(base, ground, ny)) * smoothstep(0.0, 0.15, mmk);
+    float keep = 1.0 - smoothstep(0.35 + r.w * 0.3, 0.7 + r.w * 0.25, bare);
+    h *= keep;
+  }
 
   float theta = r.z * 6.2831853;
   vec2 facing = vec2(cos(theta), sin(theta));
@@ -168,6 +200,9 @@ varying vec3 vWorldPos;
 varying float vGust;
 varying float vVar;
 varying float vPatch;
+varying float vCrop;
+varying float vCropKind;
+varying float vAlpine;
 
 void main() {
   nearFade(vWorldPos);
@@ -177,6 +212,17 @@ void main() {
   col = mix(col, uGrassTip, smoothstep(0.38, 1.0, t));
   col *= mix(0.82, 1.12, vVar);
   col = mix(col, col * vec3(1.18, 1.06, 0.62), vPatch * 0.55);
+  // High pasture: tougher, drier, sun-bleached blades.
+  col = mix(col, dot(col, vec3(0.3, 0.55, 0.15)) * vec3(1.05, 0.95, 0.62) * 0.95, vAlpine * 0.6);
+  if (vCrop > 0.0) {
+    vec3 cb, cm, ct;
+    if (vCropKind < 2.5) { cb = vec3(0.28, 0.2, 0.06); cm = vec3(0.72, 0.5, 0.14); ct = vec3(0.98, 0.82, 0.42); }
+    else if (vCropKind < 3.5) { cb = vec3(0.04, 0.16, 0.03); cm = vec3(0.16, 0.42, 0.08); ct = vec3(0.5, 0.75, 0.18); }
+    else { cb = vec3(0.06, 0.12, 0.06); cm = vec3(0.22, 0.3, 0.18); ct = vec3(0.42, 0.26, 0.85); }
+    vec3 cc = mix(cb, cm, smoothstep(0.0, 0.5, t));
+    cc = mix(cc, ct, smoothstep(vCropKind > 3.5 ? 0.62 : 0.4, 1.0, t)) * mix(0.85, 1.1, vVar);
+    col = mix(col, cc, vCrop);
+  }
   col *= uTint;
 
   vec3 N = normalize(vNormal);
@@ -197,7 +243,7 @@ void main() {
   // Gust sheen: blades bending over flash their light side (the anime "wave").
   col += vGust * smoothstep(0.25, 1.0, vT) * uSunColor * uTint * vec3(0.22, 0.26, 0.09);
 
-  col *= cloudShadowAt(vWorldPos.xz) * treeShadeAt(vWorldPos);
+  col *= cloudShadowAt(vWorldPos.xz) * treeShadeAt(vWorldPos) * sunShadow(vWorldPos);
   col *= mix(0.32, 1.0, smoothstep(0.0, 0.55, t));
 
   col = applyFog(col, vWorldPos);

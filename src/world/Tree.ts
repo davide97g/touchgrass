@@ -11,6 +11,8 @@ import {
   Vector2,
   Vector3,
 } from 'three';
+import { getRealm } from './realm/World';
+import { castShadow, shadowMaterial } from '../core/Shadows';
 import { U } from '../core/uniforms';
 import { COMMON_GLSL, smoothstep, terrainBase, terrainHeight } from './common';
 import type { FeatureMap } from './Features';
@@ -51,6 +53,7 @@ export function findTreeSite(sx: number, sz: number, yaw: number, features: Feat
       const wet = features.active.pools.some((p) => Math.hypot(p.x - x, p.z - z) < p.r + 18) ||
         features.active.streams.some((s) => s.pts.some((q, i) => i % 4 === 0 && Math.hypot(q.x - x, q.z - z) < 14));
       if (wet) continue;
+      if (getRealm().map.busy(x, z, 14)) continue;
 
       const h = terrainBase(x, z);
       let ring = 0;
@@ -218,7 +221,14 @@ void main() {
   vec4 tx = texture(uLeaves, vUv);
   // Crisp alpha-test edges at any distance.
   float a = (tx.a - 0.5) / max(fwidth(tx.a), 1e-4) + 0.5;
+#ifdef A2C
+  // Multisampled target: the edge's partial coverage becomes partial samples (soft, unaliased).
+  a = clamp(a, 0.0, 1.0);
+  if (a < 0.01) discard;
+#else
   if (a < 0.5) discard;
+  a = 1.0;
+#endif
 
   vec3 N = normalize(vN + (vec3(tx.g, 0.5, tx.b) - 0.5) * 0.45);
   vec3 V = normalize(cameraPosition - vWorldPos);
@@ -243,9 +253,19 @@ void main() {
   col *= uTint;
   col *= cloudShadowAt(vWorldPos.xz);
   col = applyFog(col, vWorldPos);
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = vec4(col, a);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
+}
+`;
+
+/** Leaf cards in the shadow pass: only the leaves cast, not the card. */
+export const LEAF_SHADOW_FRAG = /* glsl */ `
+uniform sampler2D uLeaves;
+varying vec2 vUv;
+void main() {
+  if (texture(uLeaves, vUv).a < 0.5) discard;
+  gl_FragColor = vec4(1.0);
 }
 `;
 
@@ -456,6 +476,7 @@ function carvingTexture(): CanvasTexture {
 
 export class Tree {
   readonly group = new Group();
+  private leafMaterial!: ShaderMaterial;
   readonly site: TreeSite;
   private readonly baseX: number;
   private readonly baseZ: number;
@@ -620,6 +641,9 @@ export class Tree {
       }),
     );
 
+    castShadow(bark, shadowMaterial(bark.material as ShaderMaterial));
+    castShadow(leaves, shadowMaterial(leaves.material as ShaderMaterial, LEAF_SHADOW_FRAG));
+    this.leafMaterial = leaves.material;
     this.group.add(bark, leaves);
     const base = trunkC(TRUNK_BURY / TRUNK_HEIGHT);
     this.baseX = base.x;
@@ -629,6 +653,15 @@ export class Tree {
   }
 
   /** False inside the trunk and its roots. */
+  /** Soft leaf edges when the frame is multisampled; a hard alpha test otherwise. */
+  setAlphaToCoverage(on: boolean): void {
+    const m = this.leafMaterial;
+    if (m.alphaToCoverage === on) return;
+    m.alphaToCoverage = on;
+    m.defines = on ? { A2C: '' } : {};
+    m.needsUpdate = true;
+  }
+
   clear(x: number, z: number): boolean {
     return Math.hypot(x - this.baseX, z - this.baseZ) > ROOT_RADIUS * 1.05;
   }

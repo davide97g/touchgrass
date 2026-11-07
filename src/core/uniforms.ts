@@ -1,4 +1,4 @@
-import { Color, Data3DTexture, Texture, Vector2, Vector3, Vector4 } from 'three';
+import { Color, Data3DTexture, Matrix4, Texture, Vector2, Vector3, Vector4 } from 'three';
 import { noiseTexture } from './noise';
 
 /**
@@ -46,6 +46,17 @@ export const U = {
 
   uTree: { value: new Vector4(0, 0, 0, 0) },
   uTreeCanopy: { value: new Vector4(0, 0, 0, 0) },
+
+  uRealm: { value: null as Texture | null },
+  uRealmBox: { value: new Vector4(0, 0, 1, 0) },
+  /** 0 day .. 1 lamps and windows fully lit. */
+  uLights: { value: 0 },
+
+  /** Sun shadow map around the walker (see core/Shadows.ts). */
+  uShadowMap: { value: null as Texture | null },
+  uShadowMatrix: { value: new Matrix4() },
+  /** texel size (uv), strength, enabled, depth bias */
+  uShadowParams: { value: new Vector4(0, 0, 0, 0) },
 
   uPixelRatio: { value: 1 },
 };

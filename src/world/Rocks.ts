@@ -8,6 +8,7 @@ import {
   Vector3,
 } from 'three';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { castShadow, shadowMaterial } from '../core/Shadows';
 import { U } from '../core/uniforms';
 import { COMMON_GLSL, terrainHeight } from './common';
 import type { ActiveFeatures } from './Features';
@@ -56,7 +57,7 @@ void main() {
   float diff = smoothstep(-0.05, 0.4, dot(N, L));
   col *= uAmbient * (0.75 + 0.25 * N.y) + uSunColor * (0.2 + 0.8 * diff) * max(L.y + 0.15, 0.0) * 1.05;
   col += uAmbient * pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.12;
-  col *= cloudShadowAt(vWorldPos.xz);
+  col *= cloudShadowAt(vWorldPos.xz) * sunShadow(vWorldPos);
   col = applyFog(col, vWorldPos);
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
@@ -93,6 +94,7 @@ export class Rocks {
     const mat = new ShaderMaterial({ uniforms: { ...U }, vertexShader: VERT, fragmentShader: FRAG });
     this.mesh = new InstancedMesh(rockGeometry(), mat, MAX);
     this.mesh.count = 0;
+    castShadow(this.mesh, shadowMaterial(mat));
     this.mesh.frustumCulled = false;
   }
 

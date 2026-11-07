@@ -17,7 +17,7 @@ export const TIERS: Record<Tier, TierConfig> = {
   low: {
     near: { size: 26, density: 55, segments: 4, widthScale: 1.25 },
     far: { size: 150, density: 4, segments: 2, widthScale: 1.9 },
-    maxDpr: 1,
+    maxDpr: 1.5, // phones are 3x screens: 1x looks pixelated; drops back toward 1x if too slow
     post: false,
     flowers: 3500,
     particles: 250,
@@ -70,4 +70,13 @@ export function detectTier(gl: WebGL2RenderingContext): Tier {
   if (/rtx|radeon rx|apple m\d (pro|max|ultra)|apple m[3-9]|geforce gtx 1[0-9]{3}|arc a/.test(gpu)) return 'high';
   if (/intel|uhd|iris|swiftshader|llvmpipe/.test(gpu)) return 'low';
   return 'medium';
+}
+
+/** Tier detection before the renderer exists (it decides whether the canvas gets MSAA). */
+export function probeTier(): Tier {
+  const gl = document.createElement('canvas').getContext('webgl2');
+  if (!gl) return 'low';
+  const tier = detectTier(gl);
+  gl.getExtension('WEBGL_lose_context')?.loseContext();
+  return tier;
 }
