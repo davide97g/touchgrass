@@ -5,6 +5,7 @@ import { lamp } from './kit';
 import { mulberry32 } from './rand';
 import { meander, Plan, RealmMap, type Pt, type Road, type Site } from './Realm';
 import { campfire, fieldsAround, planFarm, planGrove, planPillar, planRing, signpost } from './more';
+import { planHidden } from './hidden';
 import { planCrystals, planRuins, planVillage, planWatch } from './sites';
 import { mountainMask } from '../common';
 
@@ -156,6 +157,9 @@ function buildRealm(): Realm {
         planFarm(plan, m, x, z, rot, fs * 7919, SITES);
       }
     }
+
+    // Hidden places, away from everything above.
+    planHidden(plan, m, SITES);
 
     // Signposts where the country roads begin and end.
     for (const rd of [...plan.roads]) {

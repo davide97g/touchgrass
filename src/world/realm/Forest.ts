@@ -110,6 +110,7 @@ export class Forest {
         }
         if (near) continue;
         if (realm.sites.some((s) => Math.hypot(x - s.x, z - s.z) < s.r * 1.05 + 8)) continue;
+        if (realm.plan.clearings.some((c) => Math.hypot(x - c.x, z - c.z) < c.r)) continue;
         if (poolsNear(x, z).some((p) => Math.hypot(p.x - x, p.z - z) < p.r * 1.5 + 4)) continue;
         const y = terrainHeight(x, z);
         if (y > 230) continue;

@@ -2,6 +2,7 @@ import {
   NeutralToneMapping,
   PerspectiveCamera,
   SRGBColorSpace,
+  Vector3,
   Scene,
   Timer,
   Vector2,
@@ -9,6 +10,12 @@ import {
 } from 'three';
 import { AudioEngine } from '../audio/AudioEngine';
 import { Bells } from '../audio/Bells';
+import { Sfx, type Call } from '../audio/Sfx';
+import { Discovery, type LensState } from '../discovery/Discovery';
+import { Journal } from '../discovery/Journal';
+import { FlightFX } from '../player/FlightFX';
+import { Critters } from '../world/life/Critters';
+import { RareFlora } from '../world/life/RareFlora';
 import { Controller } from '../player/Controller';
 import { TouchControls } from '../player/TouchControls';
 import { FX, Post } from '../post/Post';
@@ -74,6 +81,20 @@ export class Experience {
   readonly fauna: Fauna;
   readonly skyward: SkyRealm;
   private readonly bells: Bells;
+  readonly sfx: Sfx;
+  readonly journal = new Journal();
+  readonly rareFlora: RareFlora;
+  readonly critters: Critters;
+  readonly discovery: Discovery;
+  readonly flightFX = new FlightFX();
+  /** What the lens sees this frame. */
+  lens: LensState;
+  private shot: ((canvas: HTMLCanvasElement) => void) | null = null;
+  private readonly trailParts: { x: number; z: number; r: number; s: number; ax?: number; az?: number; len?: number }[] = [];
+  private callT = 0;
+  private wasBoost = false;
+  private fovKick = 0;
+  private readonly flyVel = new Vector3();
   readonly shadows = new Shadows();
   private readonly bufferSize = new Vector2();
   flowers: Flowers | null = null;
@@ -101,6 +122,7 @@ export class Experience {
   private macroTarget: { x: number; y: number; z: number } | null = null;
   private macroAim = 0;
   private flyFov = 0;
+  private blastT = 0;
 
   /** When set, flies the camera (trailer) and the player controller sits idle. */
   director: CameraDirector | null = null;
@@ -151,12 +173,33 @@ export class Experience {
     this.forest = new Forest(this.realm, this.features, this.skyward.treeSpots);
     this.fauna = new Fauna(this.realm, this.features, this.forest);
     this.bells = new Bells(this.audio, this.realm.plan.bell);
+    this.sfx = new Sfx(this.audio);
+    this.rareFlora = new RareFlora(this.realm, this.forest, (id) => this.journal.isCollected(id));
+    this.critters = new Critters(this.features, this.realm.map);
+    this.discovery = new Discovery(
+      this.realm,
+      this.journal,
+      [
+        (out) => this.rareFlora.subjects(out),
+        (out) => this.fauna.subjects(out, this.camera.position.x, this.camera.position.z),
+        (out) => this.critters.subjects(out, this.camera.position, this.birds, this.tod.night, U.uSunDir.value.y),
+      ],
+      () => this.skyward.shrine,
+    );
+    this.discovery.settle();
+    this.lens = this.discovery.state;
     this.controller.waypoints = () => [
       ...this.realm.sites.map((s) => ({ name: s.name, x: s.x, z: s.z, r: s.r + (s.kind === 'pillar' ? 120 : 70), alt: s.level + (s.kind === 'pillar' ? 320 : s.kind === 'city' ? 70 : 45) })),
       { name: 'the floating castle', x: CASTLE.x, z: CASTLE.z, r: CASTLE.R + 260, alt: CASTLE.bottom + 260 },
       ...ISLANDS.filter((i) => i.R > 30).map((i) => ({ name: 'a floating island', x: i.x, z: i.z, r: i.R + 70, alt: i.y + 25 })),
     ];
-    this.controller.onLanded = () => this.onFlightChange?.(false);
+    this.controller.onLanded = () => {
+      const p = this.controller.position;
+      this.flightFX.burst(p.x, p.y, p.z, 90, 0.7);
+      this.sfx.thud(1);
+      this.sfx.whoosh(0.4, 0.9, false);
+      this.onFlightChange?.(false);
+    };
     for (const root of [this.structures.group, this.forest.group, this.fauna.group, this.tree.group, this.rocks.mesh]) this.shadows.addRoot(root);
 
     this.tod = new TimeOfDay(this.sky, params.atmosphere.time);
@@ -167,6 +210,9 @@ export class Experience {
       this.fauna.group,
       this.skyward.group,
       new Ambient(this.realm).group,
+      this.rareFlora.group,
+      this.critters.group,
+      this.flightFX.group,
     );
     this.scene.add(
       this.sky.mesh,
@@ -243,11 +289,39 @@ export class Experience {
     this.controller.macro = on;
     if (on && this.controller.wanderActive) this.setWander(false);
     this.macroTarget = null;
-    if (on && this.flowers) {
+    // Look down and the lens finds a flower (you kneel to it); look out and it stays where you aim.
+    if (on && !this.controller.flying && this.controller.pitch < -0.12) {
       const p = this.controller.position;
-      this.macroTarget = this.flowers.findTarget(p.x, p.z, this.controller.yaw, this.features);
+      this.macroTarget = this.rareTarget(p.x, p.z, this.controller.yaw);
+      if (!this.macroTarget && this.flowers) this.macroTarget = this.flowers.findTarget(p.x, p.z, this.controller.yaw, this.features);
       this.macroAim = this.macroTarget ? 1.4 : 0;
     }
+    this.controller.kneel = on && !!this.macroTarget;
+  }
+
+  /** A rare flower close in front, for the lens to turn to first. */
+  private rareTarget(x: number, z: number, yaw: number): { x: number; y: number; z: number } | null {
+    const fx = -Math.sin(yaw);
+    const fz = -Math.cos(yaw);
+    let best: { x: number; y: number; z: number } | null = null;
+    let bd = Infinity;
+    for (const s of this.rareFlora.specimens) {
+      const dx = s.x - x;
+      const dz = s.z - z;
+      const d = Math.hypot(dx, dz);
+      if (d > 3.4 || d < 0.2) continue;
+      if ((dx * fx + dz * fz) / d < 0.45) continue;
+      if (d < bd) {
+        bd = d;
+        best = { x: s.x, y: s.y, z: s.z };
+      }
+    }
+    return best;
+  }
+
+  /** Grab the next rendered frame (the photo). */
+  capture(cb: (canvas: HTMLCanvasElement) => void): void {
+    this.shot = cb;
   }
 
   /** True when the macro lens found a flower to frame. */
@@ -257,7 +331,7 @@ export class Experience {
 
   /** Scroll to zoom while in macro. */
   zoomMacro(deltaY: number): void {
-    this.macroFov = Math.min(35, Math.max(5, this.macroFov * (1 + deltaY * 0.0012)));
+    this.macroFov = Math.min(60, Math.max(4, this.macroFov * (1 + deltaY * 0.0012)));
   }
 
   // ---------- flight ----------
@@ -272,6 +346,10 @@ export class Experience {
     }
     if (this.macro) this.setMacro(false);
     c.startFlight(this.camera);
+    const p = c.position;
+    this.flightFX.burst(p.x, p.y, p.z, 160, 1);
+    this.sfx.whoosh(1, 1.8, true);
+    this.blastT = 1;
     this.onFlightChange?.(true);
   }
 
@@ -439,7 +517,8 @@ export class Experience {
     const e = this.macroAmt * this.macroAmt * (3 - 2 * this.macroAmt);
     // In flight the view widens with speed.
     this.flyFov += ((this.controller.flying ? Math.min(16, this.controller.flight.speed * 0.25) + 4 : 0) - this.flyFov) * Math.min(1, dt * 1.5);
-    const fov = params.move.fov + this.flyFov + (this.macroFov - params.move.fov) * e;
+    this.fovKick *= Math.exp(-dt * 2.5);
+    const fov = params.move.fov + this.flyFov + this.fovKick + (this.macroFov - (params.move.fov + this.flyFov + this.fovKick)) * e;
     if (Math.abs(fov - this.camera.fov) > 0.01) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
@@ -478,7 +557,18 @@ export class Experience {
     this.structures.update(dt, this.elapsed);
     const alt = cam.y - p.y;
     const high = this.controller.flying && alt > 25;
-    this.fauna.update(dt, high ? 1e6 : p.x, high ? 1e6 : p.z, this.controller.speed);
+    const tod = params.atmosphere.time;
+    this.fauna.update(dt, high ? 1e6 : p.x, high ? 1e6 : p.z, this.controller.speed, tod);
+    this.rareFlora.update(dt, cam.x, cam.z, this.features.version, smooth01((U.uLights.value - 0.25) / 0.45));
+    this.critters.update(dt, p.x, p.z, tod, this.features.version);
+    this.flightFeel(dt, alt);
+    if (this.started && !this.director) {
+      this.lens = this.discovery.update(dt, this.camera, this.macro, tod, this.post ? this.post.centerDepth : NaN);
+      // Focus pulls onto the framed subject (not the grass in front of it).
+      const want = this.macro && Number.isFinite(this.lens.dist) ? this.lens.dist : -1;
+      if (want < 0) FX.focus = -1;
+      else FX.focus = FX.focus <= 0 ? want : FX.focus + (want - FX.focus) * Math.min(1, dt * 5);
+    }
     this.skyward.update(dt, this.elapsed);
     this.forest.update(cam.x, cam.z);
     this.birds.update(dt, cam.x, cam.z, params.birds ? this.tod.night : 1);
@@ -491,11 +581,34 @@ export class Experience {
         : null;
     const skim = this.controller.flying && alt < 4;
     const trailV = this.controller.flying && !skim ? 0 : 1;
-    this.trail.update(this.renderer, dt, p.x, p.z, this.controller.velocity.x * trailV, this.controller.velocity.y * trailV, this.controller.crouch, part);
+    // Grass bows away around rare flowers not yet collected; flying low, it flattens in rings below you.
+    const tp = this.trailParts;
+    tp.length = 0;
+    if (!this.director) {
+      const lowFly = this.controller.flying ? Math.max(0, 1 - alt / 16) : 0;
+      if (lowFly > 0) tp.push({ x: p.x, z: p.z, r: 2.2 + alt * 0.25, s: 0.9 * lowFly });
+      if (this.blastT > 0) {
+        this.blastT -= dt;
+        tp.push({ x: p.x, z: p.z, r: 1.5 + (1 - this.blastT) * 6, s: Math.max(0, this.blastT) * 1.2 });
+      }
+      // The lens parts the grass around what it frames and along the line of sight to it.
+      const ls = this.discovery.focusPoint;
+      const t = this.macro && !this.controller.flying ? (ls && Math.hypot(ls.x - p.x, ls.z - p.z) < 18 ? ls : this.macroTarget) : null;
+      if (t) {
+        const d = Math.hypot(t.x - p.x, t.z - p.z);
+        const animal = t === ls && this.discovery.state.subject?.cat === 'fauna';
+        tp.push({ x: t.x, z: t.z, r: animal ? 1.3 : 0.7, s: 1 });
+        if (d > 0.5) tp.push({ x: (t.x + p.x) / 2, z: (t.z + p.z) / 2, r: animal ? 0.7 : 0.55, s: 1, ax: (t.x - p.x) / d, az: (t.z - p.z) / d, len: d / 2 });
+      }
+      this.rareFlora.nearby(p.x, p.z, 19, (id) => this.journal.isCollected(id), tp);
+      if (tp.length > 8) tp.length = 8;
+    }
+    this.trail.update(this.renderer, dt, p.x, p.z, this.controller.velocity.x * trailV, this.controller.velocity.y * trailV, this.controller.crouch, part, tp);
 
     if (this.audio.running) {
       const yaw = this.controller.yaw;
       this.bells.update(dt, p.x, p.z, yaw);
+      if (!this.director) this.voices(dt, p.x, p.z, yaw);
       const rx = Math.cos(yaw);
       const rz = -Math.sin(yaw);
       const wd = U.uWindDir.value;
@@ -525,14 +638,63 @@ export class Experience {
     this.shadows.render(this.renderer, cam.x + fwdX * 35, cam.y, cam.z + fwdZ * 35);
 
     this.renderer.toneMappingExposure = this.tod.exposure * FX.exposure;
-    if (this.post) this.post.render(this.elapsed, params.post.bloom * this.tod.bloom * 0.6, params.post.vignette + e * 0.4, e);
+    if (this.post) this.post.render(this.elapsed, params.post.bloom * this.tod.bloom * 0.6, params.post.vignette + e * 0.4, e, this.macro && !this.director);
     else this.renderer.render(this.scene, this.camera);
+    // A photo: read the frame back while it is still in the drawing buffer.
+    if (this.shot) {
+      const cb = this.shot;
+      this.shot = null;
+      cb(this.renderer.domElement);
+    }
 
     if (this.firstFrame) {
       this.firstFrame = false;
       this.onFirstFrame?.();
     }
     this.measure(dt);
+  }
+
+  /** Speed lines, the rush at the edges of the view, a whoosh when you put on speed. */
+  private flightFeel(dt: number, alt: number): void {
+    const c = this.controller;
+    const f = c.flight;
+    if (c.flying) {
+      this.flyVel.copy(f.vel);
+      const sp = f.speed;
+      const rush = Math.min(1, Math.max(0, (sp - 14) / 46));
+      FX.speed += (rush * 0.85 - FX.speed) * Math.min(1, dt * 3);
+      this.flightFX.update(dt, this.flyVel, Math.min(1, sp / 22) * (alt > 2 ? 1 : 0.4));
+      const boost = c.boosting;
+      if (boost && !this.wasBoost && f.mode === 'fly') {
+        this.sfx.whoosh(0.8, 1.3, true);
+        this.fovKick = 7;
+      }
+      this.wasBoost = boost;
+    } else {
+      FX.speed += (0 - FX.speed) * Math.min(1, dt * 4);
+      this.flightFX.update(dt, this.flyVel.multiplyScalar(Math.exp(-dt * 3)), 0);
+      this.wasBoost = false;
+    }
+  }
+
+  /** Animals you come near make themselves heard. */
+  private voices(dt: number, x: number, z: number, yaw: number): void {
+    this.callT -= dt;
+    if (this.callT > 0) return;
+    this.callT = 0.6;
+    const rx = Math.cos(yaw);
+    const rz = -Math.sin(yaw);
+    const pan = (ax: number, az: number, d: number) => ((ax - x) * rx + (az - z) * rz) / Math.max(d, 1);
+    const kinds: Partial<Record<string, Call>> = { sheep: 'sheep', horse: 'horse', chicken: 'chicken', owl: 'owl', fox: 'fox', cat: 'cat', deer: 'deer', heron: 'heron' };
+    for (const a of this.fauna.nearest(x, z, 55)) {
+      const k = kinds[a.sp];
+      if (k && Math.random() < 0.35) this.sfx.call(k, a.d, pan(a.x, a.z, a.d));
+    }
+    const tod = params.atmosphere.time;
+    const fr = this.critters.nearestFrog(x, z);
+    if (fr && fr.d < 35 && tod !== 'Noon') this.sfx.call('frog', fr.d, pan(fr.x, fr.z, fr.d));
+    const kt = this.critters.nearestKite(x, z);
+    if (kt && Math.random() < 0.2) this.sfx.call('kite', Math.min(59, kt.d * 0.4), pan(kt.x, kt.z, Math.hypot(kt.x - x, kt.z - z)));
   }
 
   private waterAndBirdAudio(x: number, z: number, rx: number, rz: number) {
@@ -570,4 +732,9 @@ export class Experience {
       this.needsResize = true;
     }
   }
+}
+
+function smooth01(x: number): number {
+  const t = Math.min(1, Math.max(0, x));
+  return t * t * (3 - 2 * t);
 }

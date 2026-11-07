@@ -28,6 +28,8 @@ export interface IslandSpec {
   z: number;
   R: number;
   seed: number;
+  /** Keep a shrine at the centre (the sky shrine). */
+  shrine?: boolean;
 }
 
 /** Island outline radius at an angle, and the meadow height at a local point. */
@@ -253,7 +255,7 @@ function grassGeometry(R: number, seed: number, r: Rng): BufferGeometry {
 let bladeMat: ShaderMaterial | null = null;
 
 /** Build one island at the origin of its group. Returns the group and where trees should stand (world space). */
-export function buildIsland(spec: IslandSpec): { group: Group; trees: { x: number; y: number; z: number; s: number; sp: SpeciesName }[]; rim: (a: number) => number } {
+export function buildIsland(spec: IslandSpec): { group: Group; trees: { x: number; y: number; z: number; s: number; sp: SpeciesName }[]; rim: (a: number) => number; shrine: Vector3 | null } {
   const r = mulberry32(spec.seed * 7919);
   const R = spec.R;
   const g = new Group();
@@ -354,9 +356,34 @@ export function buildIsland(spec: IslandSpec): { group: Group; trees: { x: numbe
     const x = Math.cos(a) * d;
     const z = Math.sin(a) * d;
     if (trees.some((t) => Math.hypot(t.x - spec.x - x, t.z - spec.z - z) < 5)) continue;
+    if (spec.shrine && Math.hypot(x, z) < 14) continue;
     const sp: SpeciesName = r() < 0.45 ? 'spruce' : r() < 0.6 ? 'oak' : r() < 0.5 ? 'birch' : 'bush';
     trees.push({ x: spec.x + x, y: spec.y + top(x, z) - 0.2, z: spec.z + z, s: range(r, 0.7, 1.15), sp });
   }
+  let shrine: Vector3 | null = null;
+  if (spec.shrine) {
+    // The sky shrine: a vermilion gate hung with bells, an altar and a floating rune stone.
+    const sb = new Builder();
+    const y = top(0, 0);
+    const red = '#b8402a';
+    for (const s of [-1, 1]) {
+      sb.cyl(s * 2.2, y - 0.4, 3, 0.22, 5.4, red, M.wood, 12, 0.3);
+      sb.cyl(s * 2.2, y - 0.4, 3, 0.3, 0.6, '#2a2420', M.wood, 12, 0.3);
+    }
+    sb.box(0, y + 4.55, 3, 6.6, 0.32, 0.5, 0, '#2a2420', M.wood, 0.4);
+    sb.box(0, y + 4.1, 3, 5.6, 0.26, 0.36, 0, red, M.wood, 0.4);
+    sb.box(0, y + 3.3, 3, 5.0, 0.22, 0.3, 0, red, M.wood, 0.4);
+    for (let k = -2; k <= 2; k++) {
+      sb.cyl(k * 0.9, y + 2.7, 3, 0.012, 0.6, '#c8b890', M.cloth, 8);
+      sb.blob(k * 0.9, y + 2.62, 3, 0.11, 0.14, 0.11, 0, '#d8b04a', M.metal, 0.6, true);
+    }
+    for (let k = 0; k < 5; k++) sb.box(0, y - 0.3 + k * 0.12, 0.6 - k * 0.6, 3.2, 0.3, 0.7, 0, '#d8d0bf', M.stone, r());
+    sb.box(0, y - 0.2, -2.2, 2.0, 1.25, 1.2, 0, '#e2dccd', M.stone, 0.3);
+    sb.box(0, y + 1.06, -2.2, 1.6, 0.06, 0.8, 0, '#8fe8ff', M.rune, 0.5);
+    sb.gem(0, y + 2.3, -2.2, 0.35, 0.7, 0.35, 0, '#8fe8ff', M.rune, 0.8);
+    g.add(new Mesh(sb.build(), m2));
+    shrine = new Vector3(spec.x, spec.y + y + 1.6, spec.z);
+  }
   g.position.set(spec.x, spec.y, spec.z);
-  return { group: g, trees, rim: edge };
+  return { group: g, trees, rim: edge, shrine };
 }

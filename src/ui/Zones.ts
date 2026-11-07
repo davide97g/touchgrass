@@ -25,6 +25,8 @@ export class Zones {
   private readonly strip: HTMLElement;
   private readonly marks: { el: HTMLElement; x: number; z: number; label: string; dist: HTMLElement | null }[] = [];
   private current = '';
+  /** Name of the place you are in now (for photo captions). */
+  currentName = FIELDS.name;
   private pending = '';
   private pendingT = 0;
   private hideTimer = 0;
@@ -111,6 +113,7 @@ export class Zones {
       // Linger a moment before announcing (no flicker at borders); roads only if you follow them.
       if (this.pendingT > (zone.id.startsWith('road') ? 6 : 1.2)) {
         this.current = zone.id;
+        this.currentName = zone.name;
         this.show(zone);
       }
     } else this.pending = '';

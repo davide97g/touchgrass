@@ -8,6 +8,8 @@ import {
   Scene,
   ShaderMaterial,
   Vector2,
+  Vector3,
+  Vector4,
   WebGLRenderTarget,
   type WebGLRenderer,
 } from 'three';
@@ -15,6 +17,7 @@ import { U } from '../core/uniforms';
 
 const RES = 256;
 const SIZE = 40; // metres covered, centred on the player
+const MAX_PARTS = 8;
 
 /**
  * Player-centred ping-pong map of push vectors. Each frame the previous map is
@@ -54,6 +57,8 @@ export class TrailMap {
         uPart: { value: new Vector2(-10, -10) },
         uPartR: { value: 0.02 },
         uPartS: { value: 0 },
+        uParts: { value: Array.from({ length: MAX_PARTS }, () => new Vector4()) },
+        uPartAxis: { value: Array.from({ length: MAX_PARTS }, () => new Vector3()) },
       },
       vertexShader: /* glsl */ `
         varying vec2 vUv;
@@ -70,6 +75,8 @@ export class TrailMap {
         uniform vec2 uPart;
         uniform float uPartR;
         uniform float uPartS;
+        uniform vec4 uParts[${MAX_PARTS}]; // uv centre, radius (uv), strength
+        uniform vec3 uPartAxis[${MAX_PARTS}]; // capsule axis (unit) and half length (uv); zero = round
         varying vec2 vUv;
         void main() {
           vec2 suv = vUv + uShift;
@@ -88,6 +95,19 @@ export class TrailMap {
           float fp = smoothstep(uPartR * 1.7, uPartR * 0.8, rp) * smoothstep(0.0, uPartR * 0.45, rp) * uPartS;
           vec2 part = normalize(dp + vec2(1e-6)) * fp;
           if (length(part) > length(stamp)) stamp = part;
+          // More rings: grass bowing around rare flowers, the downwash of a low flight.
+          for (int i = 0; i < ${MAX_PARTS}; i++) {
+            vec4 q = uParts[i];
+            if (q.w <= 0.0) continue;
+            vec2 dq = vUv - q.xy;
+            vec3 ax = uPartAxis[i];
+            // Capsules part sideways, like two hands opening a path through the grass.
+            if (ax.z > 0.0) dq -= ax.xy * clamp(dot(dq, ax.xy), -ax.z, ax.z);
+            float rq = length(dq);
+            float fq = smoothstep(q.z * 1.7, q.z * 0.8, rq) * smoothstep(0.0, q.z * 0.08, rq) * q.w;
+            vec2 pq = normalize(dq + vec2(1e-6)) * fq;
+            if (length(pq) > length(stamp)) stamp = pq;
+          }
           vec2 outv = length(stamp) > length(prev) ? mix(prev, stamp, 0.6) : prev;
           gl_FragColor = vec4(outv, 0.0, 1.0);
         }
@@ -112,6 +132,7 @@ export class TrailMap {
     vz: number,
     crouch: number,
     part: { x: number; z: number; strength: number } | null = null,
+    extra: readonly { x: number; z: number; r: number; s: number; ax?: number; az?: number; len?: number }[] = [],
   ): void {
     const texel = SIZE / RES;
     const cx = Math.round(x / texel) * texel;
@@ -135,6 +156,15 @@ export class TrailMap {
       u.uPartS.value = part.strength;
     } else {
       u.uPartS.value = 0;
+    }
+    const parts = u.uParts.value as Vector4[];
+    const axes = u.uPartAxis.value as Vector3[];
+    for (let i = 0; i < MAX_PARTS; i++) {
+      const q = extra[i];
+      if (q) parts[i].set((q.x - cx) / SIZE + 0.5, (q.z - cz) / SIZE + 0.5, q.r / SIZE, q.s);
+      else parts[i].set(0, 0, 0, 0);
+      if (q && q.len) axes[i].set(q.ax ?? 1, q.az ?? 0, q.len / SIZE);
+      else axes[i].set(0, 0, 0);
     }
     u.uPrev.value = this.rtA.texture;
 

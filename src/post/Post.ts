@@ -7,6 +7,7 @@ import {
   type Scene,
   ShaderMaterial,
   type Texture,
+  UnsignedByteType,
   Vector2,
   type WebGLRenderer,
   WebGLRenderTarget,
@@ -41,6 +42,7 @@ export const FX = {
   flare: 0, // lens flare strength
   sunUv: new Vector2(0.5, 0.5), // sun position on screen (0..1)
   flareColor: new Color(1.0, 0.72, 0.45),
+  speed: 0, // flight speed rush: radial blur and colour fringes at the edges, 0..1
 };
 
 const GradeShader = {
@@ -60,6 +62,7 @@ const GradeShader = {
     uFlare: { value: 0 },
     uSunUv: { value: new Vector2(0.5, 0.5) },
     uFlareCol: { value: new Color(1, 0.72, 0.45) },
+    uSpeed: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -81,6 +84,7 @@ const GradeShader = {
     uniform float uFlare;
     uniform vec2 uSunUv;
     uniform vec3 uFlareCol;
+    uniform float uSpeed;
     varying vec2 vUv;
     // Lens flare: a warm glow and anamorphic streak at the sun, ghosts and a halo ring mirrored through the centre.
     vec3 lensFlare(vec2 uv, float aspect) {
@@ -130,6 +134,19 @@ const GradeShader = {
         uv = q / vec2(aspect, 1.0) + 0.5;
       }
       vec3 c = texture2D(tDiffuse, uv).rgb;
+      // Speed: the edges of the view stream toward you and split into colour fringes.
+      if (uSpeed > 0.005) {
+        vec2 dc = uv - 0.5;
+        float k = uSpeed * smoothstep(0.12, 0.7, length(dc * vec2(aspect, 1.0)));
+        vec3 acc = c;
+        for (int i = 1; i < 9; i++) {
+          float t = float(i) / 9.0;
+          acc += texture2D(tDiffuse, uv - dc * t * 0.075 * k).rgb;
+        }
+        c = acc / 9.0;
+        c.r = mix(c.r, texture2D(tDiffuse, uv - dc * 0.012 * k).r, min(1.0, k * 1.5));
+        c.b = mix(c.b, texture2D(tDiffuse, uv + dc * 0.012 * k).b, min(1.0, k * 1.5));
+      }
       // Full-screen soft focus (eyes adjusting, transitions).
       if (uBlur > 0.3) {
         vec2 px = uBlur * (uRes.y / 1080.0) / uRes;
@@ -204,6 +221,15 @@ float linZ(vec2 uv) { return -perspectiveDepthToViewZ(texture2D(tDepth, uv).x, u
  */
 class DofPass extends Pass {
   amount = 0;
+  /** Measure the nearest depth around the centre (for the lens: is something in front of the subject?). */
+  probe = false;
+  /** Nearest depth at the centre in metres, NaN when unknown. */
+  centerDepth = NaN;
+  private probeT = 0;
+  private readonly probeRT = new WebGLRenderTarget(1, 1, { type: UnsignedByteType, minFilter: NearestFilter, magFilter: NearestFilter, depthBuffer: false });
+  private readonly probeBuf = new Uint8Array(4);
+  private readonly probeMat: ShaderMaterial;
+  private readonly probeQuad: FullScreenQuad;
   private readonly quad: FullScreenQuad;
   private readonly focusQuad: FullScreenQuad;
   private readonly mat: ShaderMaterial;
@@ -297,6 +323,24 @@ class DofPass extends Pass {
     });
     this.quad = new FullScreenQuad(this.mat);
     this.focusQuad = new FullScreenQuad(this.focusMat);
+    this.probeMat = new ShaderMaterial({
+      uniforms: { tDepth: { value: null }, uNear: { value: 0.05 }, uFar: { value: 2500 } },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+      fragmentShader: /* glsl */ `
+        ${DEPTH_GLSL}
+        void main() {
+          float d = linZ(vec2(0.5));
+          for (int i = 0; i < 8; i++) {
+            float a = float(i) * 0.785398;
+            d = min(d, linZ(vec2(0.5) + vec2(cos(a), sin(a)) * vec2(0.004, 0.006)));
+          }
+          // Log-encoded into 16 bits of two 8-bit channels.
+          float v = clamp(log(d + 1.0) / log(3001.0), 0.0, 1.0) * 65535.0;
+          gl_FragColor = vec4(floor(v / 256.0) / 255.0, mod(floor(v), 256.0) / 255.0, 0.0, 1.0);
+        }
+      `,
+    });
+    this.probeQuad = new FullScreenQuad(this.probeMat);
   }
 
   render(renderer: WebGLRenderer, writeBuffer: WebGLRenderTarget, readBuffer: WebGLRenderTarget): void {
@@ -326,6 +370,17 @@ class DofPass extends Pass {
     u.uNearBlur.value = FX.nearBlur;
     u.uTexel.value.set(1 / readBuffer.width, 1 / readBuffer.height);
     u.uMaxBlur.value = Math.max(10, readBuffer.height / 42);
+    if (this.probe && ++this.probeT % 3 === 0) {
+      const pu = this.probeMat.uniforms;
+      pu.tDepth.value = readBuffer.depthTexture;
+      pu.uNear.value = near;
+      pu.uFar.value = far;
+      renderer.setRenderTarget(this.probeRT);
+      this.probeQuad.render(renderer);
+      renderer.readRenderTargetPixels(this.probeRT, 0, 0, 1, 1, this.probeBuf);
+      const v = (this.probeBuf[0] * 256 + this.probeBuf[1]) / 65535;
+      this.centerDepth = Math.exp(v * Math.log(3001)) - 1;
+    } else if (!this.probe) this.centerDepth = NaN;
     renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
     this.quad.render(renderer);
   }
@@ -336,6 +391,9 @@ class DofPass extends Pass {
     this.mat.dispose();
     this.focusMat.dispose();
     this.focus.forEach((r) => r.dispose());
+    this.probeRT.dispose();
+    this.probeMat.dispose();
+    this.probeQuad.dispose();
   }
 }
 
@@ -383,9 +441,15 @@ export class Post {
     this.grade.uniforms.uRes.value.set(w * pixelRatio, h * pixelRatio);
   }
 
-  render(time: number, bloom: number, vignette: number, macro: number): void {
+  /** Nearest depth at the centre of the last frame (metres), NaN when not measuring. */
+  get centerDepth(): number {
+    return this.dof.centerDepth;
+  }
+
+  render(time: number, bloom: number, vignette: number, macro: number, probe = false): void {
     this.dof.amount = macro;
     this.dof.enabled = macro > 0.01 || FX.nearBlur > 0.001;
+    this.dof.probe = probe && this.dof.enabled;
     this.bloom.strength = bloom * FX.bloom;
     const g = this.grade.uniforms;
     g.uVignette.value = vignette;
@@ -400,6 +464,7 @@ export class Post {
     g.uFlare.value = FX.flare;
     g.uSunUv.value.copy(FX.sunUv);
     g.uFlareCol.value.copy(FX.flareColor);
+    g.uSpeed.value = FX.speed;
     g.tTitle.value = FX.titleTex;
     this.composer.render();
   }

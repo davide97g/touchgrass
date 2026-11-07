@@ -7,6 +7,7 @@ import {
   Mesh,
   PlaneGeometry,
   ShaderMaterial,
+  Vector3,
 } from 'three';
 import { U } from '../../core/uniforms';
 import { COMMON_GLSL } from '../common';
@@ -138,13 +139,14 @@ interface Island {
   R: number;
   seed: number;
   fall: number;
+  shrine?: boolean;
 }
 
 export const ISLANDS: Island[] = [
   { x: 260, y: 150, z: -760, R: 42, seed: 11, fall: 1 },
   { x: -980, y: 230, z: -160, R: 64, seed: 23, fall: 2 },
   { x: 760, y: 190, z: 330, R: 36, seed: 37, fall: 1 },
-  { x: -120, y: 290, z: 980, R: 80, seed: 41, fall: 2 },
+  { x: -120, y: 290, z: 980, R: 80, seed: 41, fall: 2, shrine: true },
   { x: -1250, y: 340, z: 980, R: 52, seed: 53, fall: 1 },
   { x: 120, y: 120, z: 160, R: 18, seed: 67, fall: 0 },
   { x: -700, y: 420, z: -1100, R: 70, seed: 71, fall: 1 },
@@ -161,6 +163,8 @@ export class Sky {
   private readonly drifters: { obj: Group; y: number; amp: number; ph: number; spin: number }[] = [];
   /** Trees standing on the islands (planted by the forest, at absolute heights). */
   readonly treeSpots: TreeSpot[] = [];
+  /** Where the sky shrine stands (world space). */
+  shrine: Vector3 | null = null;
 
   constructor() {
     this.group.add(this.buildCastle());
@@ -168,6 +172,7 @@ export class Sky {
       const built = buildIsland(isl);
       this.group.add(built.group);
       this.treeSpots.push(...built.trees);
+      if (built.shrine) this.shrine = built.shrine;
       // Waterfalls over the lip.
       const r = mulberry32(isl.seed * 31);
       for (let i = 0; i < isl.fall; i++) {

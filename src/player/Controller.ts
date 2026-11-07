@@ -28,6 +28,8 @@ export class Controller {
   wanderActive = true;
   /** Macro lens: kneel, move slowly, look gently. */
   macro = false;
+  /** Kneel down to a flower while the lens is up. */
+  kneel = false;
   lookScale = 1;
   private macroK = 0;
   readonly wander = new AutoWander(0);
@@ -53,6 +55,8 @@ export class Controller {
   onLanded: (() => void) | null = null;
   private slide = 0;
   private fallV = 0;
+  /** Shift held in flight. */
+  boosting = false;
   /** Ground slope under the walker (rise over run). */
   slope = 0;
   speed = 0;
@@ -152,6 +156,7 @@ export class Controller {
       input.lift = (k('Space') ? 1 : 0) - (k('KeyC') || k('ControlLeft') || k('ControlRight') ? 1 : 0);
       input.boost = k('ShiftLeft') || k('ShiftRight');
     }
+    this.boosting = input.boost;
     if (f.auto) {
       const kk = 1 - Math.exp(-dt * 0.9);
       this.yaw = angleLerp(this.yaw, f.autoLookYaw, kk);
@@ -202,7 +207,7 @@ export class Controller {
     }
 
     const crouching = this.crouchHeld || this.crouchToggled;
-    this.macroK = MathUtils.lerp(this.macroK, this.macro ? 1 : 0, 1 - Math.exp(-dt * 3));
+    this.macroK = MathUtils.lerp(this.macroK, this.macro && this.kneel ? 1 : 0, 1 - Math.exp(-dt * 3));
     this.crouch = MathUtils.lerp(this.crouch, crouching ? 1 : 0, 1 - Math.exp(-dt * 5));
     // Holding Shift: a brisk walk at first, then a long easy stride for crossing the realm.
     this.runTime = run ? this.runTime + dt : 0;

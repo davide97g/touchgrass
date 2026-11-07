@@ -219,9 +219,7 @@ export function planRuins(plan: Plan, site: Site): void {
     }
   });
   // The broken watchtower.
-  const ta = 2.2;
-  const tx = cx + Math.cos(ta) * 27;
-  const tz = cz + Math.sin(ta) * 27;
+  const { x: tx, z: tz } = watchtower(site);
   plan.disc(tx, tz, 5.6);
   plan.prop((b) => {
     const y = Math.min(terrainHeight(tx, tz), y0);
@@ -235,6 +233,14 @@ export function planRuins(plan: Plan, site: Site): void {
       b.box(tx + Math.cos(a) * 5.22, y + k * 4.4, tz + Math.sin(a) * 5.22, 0.8, 1.6, 0.14, -a + Math.PI / 2, '#1c2230', M.window, 0.05);
     }
   }, 'far');
+}
+
+/** Where the ruins' broken watchtower stands, and the height of its flat top (once the realm is baked). */
+export function watchtower(site: Site): { x: number; z: number; top: () => number } {
+  const ta = 2.2;
+  const x = site.x + Math.cos(ta) * 27;
+  const z = site.z + Math.sin(ta) * 27;
+  return { x, z, top: () => Math.min(terrainHeight(x, z), site.level) - 3 + 24 };
 }
 
 /** A field of giant crystals pushing out of the ground. */

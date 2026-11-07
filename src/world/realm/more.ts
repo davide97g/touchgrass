@@ -28,7 +28,7 @@ export function campfire(plan: Plan, x: number, z: number): void {
 }
 
 /** Stone lantern with a glowing light box. */
-function stoneLantern(plan: Plan, b: Builder, x: number, y: number, z: number, rot: number): void {
+export function stoneLantern(plan: Plan, b: Builder, x: number, y: number, z: number, rot: number): void {
   b.box(x, y - 0.3, z, 0.7, 0.5, 0.7, rot, '#bdb5a3', M.stone);
   b.cyl(x, y + 0.2, z, 0.16, 0.9, '#c9bfa8', M.stone, 8);
   b.box(x, y + 1.1, z, 0.55, 0.45, 0.55, rot, '#ffd590', M.lamp, 0.4);

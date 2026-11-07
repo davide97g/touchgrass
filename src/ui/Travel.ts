@@ -1,5 +1,6 @@
 import type { Experience } from '../core/Experience';
-import { findSpawn, terrainBase } from '../world/common';
+import { findSpawn } from '../world/common';
+import { findSummit } from '../world/summit';
 import type { Site } from '../world/realm/Realm';
 
 export interface Destination {
@@ -43,6 +44,8 @@ export class Travel {
   private busy = false;
   onChange: ((open: boolean) => void) | null = null;
   onArrive: ((d: Destination) => void) | null = null;
+  /** Extra places unlocked later (hidden places you have found). */
+  extra: () => Destination[] = () => [];
 
   constructor(private readonly exp: Experience) {
     this.el = document.createElement('div');
@@ -73,7 +76,8 @@ export class Travel {
         return;
       }
       const n = parseInt(e.key, 10);
-      if (n >= 1 && n <= 9 && this.dests && this.dests[n - 1]) this.go(this.dests[n - 1].id);
+      const all = this.all();
+      if (n >= 1 && n <= 9 && all[n - 1]) this.go(all[n - 1].id);
     });
   }
 
@@ -114,26 +118,7 @@ export class Travel {
       out.push({ id: s.id, name: s.name, subtitle: s.subtitle, x: p.x, z: p.z, yaw: yawTo(p.x, p.z, s.x, s.z) });
     }
     // A summit in the range, looking back over everything.
-    // The highest spot you can actually stand on (gentle enough not to slide off).
-    let peak = { x: -2000, z: 600, score: -Infinity };
-    for (let x = -2500; x <= -1700; x += 12) {
-      for (let z = 200; z <= 1100; z += 12) {
-        const h = terrainBase(x, z);
-        const e = 1.5;
-        let worst = 0;
-        for (const [dx, dz] of [[0, 0], [3, 0], [-3, 0], [0, 3], [0, -3]]) {
-          const gx = (terrainBase(x + dx + e, z + dz) - terrainBase(x + dx - e, z + dz)) / (2 * e);
-          const gz = (terrainBase(x + dx, z + dz + e) - terrainBase(x + dx, z + dz - e)) / (2 * e);
-          worst = Math.max(worst, Math.hypot(gx, gz));
-        }
-        if (worst > 0.45) continue;
-        let ring = 0;
-        for (let k = 0; k < 8; k++) ring += terrainBase(x + Math.cos(k * 0.785) * 70, z + Math.sin(k * 0.785) * 70);
-        const prominence = h - ring / 8;
-        const score = h + prominence * 3 - worst * 60;
-        if (score > peak.score) peak = { x, z, score };
-      }
-    }
+    const peak = findSummit();
     const sx = peak.x;
     const sz = peak.z;
     out.push({ id: 'summit', name: 'Skyreach Summit', subtitle: 'The Roof of the Realm', x: sx, z: sz, yaw: yawTo(sx, sz, -400, 100) });
@@ -141,9 +126,13 @@ export class Travel {
     return out;
   }
 
+  private all(): Destination[] {
+    return [...this.destinations(), ...this.extra()];
+  }
+
   private render(): void {
     const p = this.exp.controller.position;
-    this.list.innerHTML = this.destinations()
+    this.list.innerHTML = this.all()
       .map((d, i) => {
         const dist = Math.hypot(d.x - p.x, d.z - p.z);
         const ds = dist < 1000 ? `${Math.round(dist / 10) * 10} m` : `${(dist / 1000).toFixed(1)} km`;
@@ -173,7 +162,7 @@ export class Travel {
   }
 
   go(id: string): void {
-    const d = this.destinations().find((x) => x.id === id);
+    const d = this.all().find((x) => x.id === id);
     if (!d || this.busy) return;
     this.busy = true;
     this.hide();

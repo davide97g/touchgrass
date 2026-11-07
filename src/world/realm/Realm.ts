@@ -2,6 +2,7 @@ import { ClampToEdgeWrapping, DataTexture, DataUtils, HalfFloatType, LinearFilte
 import { U } from '../../core/uniforms';
 import { mountainMask, setRealmSampler, smoothstep, terrainBase } from '../common';
 import type { Builder } from './geom';
+import type { Secret } from './hidden';
 
 /**
  * The realm: one hand-planned world laid over the endless field. Sites (a walled city,
@@ -81,6 +82,7 @@ interface Pave {
   z: number;
   r: number;
   pave: number;
+  amount?: number;
 }
 
 /** What the site generators hand to the planner. */
@@ -105,6 +107,10 @@ export class Plan {
   readonly flocks: { x: number; z: number; r: number; kind: 'chicken' | 'cat'; n: number }[] = [];
   /** Areas where petals drift (blossom groves). */
   readonly petals: { x: number; z: number; r: number }[] = [];
+  /** Glades kept free of trees (hidden places). */
+  readonly clearings: { x: number; z: number; r: number }[] = [];
+  /** Hidden places (see hidden.ts). */
+  readonly secrets: Secret[] = [];
   /** The city's bell tower (for the tolling bells). */
   bell: { x: number; y: number; z: number } | null = null;
 
@@ -125,8 +131,9 @@ export class Plan {
   disc(x: number, z: number, r: number): void {
     this.solids.push({ x, z, hx: r, hz: -1, rot: 0 });
   }
-  pave(x: number, z: number, r: number, pave = 1): void {
-    this.paves.push({ x, z, r, pave });
+  /** Paved disc; `amount` < 1 only shortens the grass (glades, worn ground). */
+  pave(x: number, z: number, r: number, pave = 1, amount = 1): void {
+    this.paves.push({ x, z, r, pave, amount });
   }
   field(x: number, z: number, w: number, d: number, rot: number, crop: number): void {
     this.fields.push({ x, z, w, d, rot, crop });
@@ -344,7 +351,7 @@ export class RealmMap {
     for (const p of this.plan.paves) {
       this.forEach(p.x - p.r - 2, p.z - p.r - 2, p.x + p.r + 2, p.z + p.r + 2, (k, x, z) => {
         const d = Math.hypot(x - p.x, z - p.z);
-        const m = 1 - smoothstep(p.r - 0.5, p.r + 0.8, d);
+        const m = (1 - smoothstep(p.r - 0.5, p.r + 0.8, d)) * (p.amount ?? 1);
         if (m > this.road[k]) {
           this.road[k] = m;
           this.kind[k] = p.pave;

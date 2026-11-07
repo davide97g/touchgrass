@@ -23,6 +23,7 @@ import type { Realm } from './World';
 
 const SMOKE_VERT = /* glsl */ `
 ${COMMON_GLSL}
+uniform float uPixelRatio;
 attribute vec4 aSeed; // phase, side, size, strength
 varying float vA;
 varying float vT;
@@ -116,6 +117,7 @@ void main() {
 
 const PETAL_VERT = /* glsl */ `
 ${COMMON_GLSL}
+uniform float uPixelRatio;
 attribute vec4 aSeed;
 uniform vec3 uArea; // x, z, radius
 varying float vA;

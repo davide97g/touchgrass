@@ -32,6 +32,19 @@ The field is no longer only a field. Around the spawn lies one hand-planned worl
 
 Everything is still procedural and asset-free. Code: `src/world/realm/` (`World.ts` the layout, `Realm.ts` the baked plan map, `city.ts`/`sites.ts` the generators, `kit.ts` the building kit, `Structures.ts` the shared shader, `Forest.ts`, `Island.ts`, `Fauna.ts`, `Skyward.ts`), `src/world/flora/Arbor.ts` (tree growth, leaf atlas, bark and leaf shaders), `src/core/Shadows.ts`, `src/ui/Zones.ts`, `src/audio/Bells.ts`. The plan map (height change, paved, solid, paving kind) is sampled by the terrain, grass, flowers, walking and animals exactly like the pond feature map.
 
+## Finding things: the lens and the field journal
+
+The realm is full of things to find, and a camera to keep them with.
+
+- **Rare flowers** (`src/world/life/RareFlora.ts`, `floraKit.ts`): twelve species, each a real little mesh built for close-ups (bent, cupped, twisted petals, lathed bells and trumpets, stamens) with its own shader patterns: felted edelweiss, chequered fritillary bells, freckled martagon turbans, waxy ghost pipes, silk pasque cups, translucent blue poppies. They grow where the real ones would: fritillaries on the pool shores, pasque flowers among the standing stones, the blue poppy on Watcher’s Rise, lady’s slippers and martagon lilies at the wood edges, ghost pipe in the darkest wood, gentians and edelweiss up the mountain road, the skybell by the summit cairn. Three the realm grew on its own: the **Moonpetal** under the cherries (closed by day, opens and glows at dusk), the glassy **Starbloom** among the crystals, the four-leaf clover near where you wake. Until collected, golden motes rise from them and the grass bows away around them.
+- **Creatures** (`src/world/realm/Fauna.ts`, `src/world/life/Critters.ts`): besides the herds, brown hares that bound across the fields, red foxes on the field margins (golden hour, dusk, dawn), hedgehogs in every farmyard after dark, alpine ibex under the range, grey herons fishing at the bigger pools, a tawny owl on the broken watchtower at night, the **Pale Hart** in the deepest eastern wood on misty mornings, red kites circling high on the thermals, emperor dragonflies over the pools, frogs on the shores (they croak at dusk), swallows and four kinds of butterfly. Many make themselves heard when you come near (`src/audio/Sfx.ts`).
+- **Hidden places** (`src/world/realm/hidden.ts`): a fairy ring of glowing mushrooms in a forest glade, the Moonwell in a southern hollow, a lone swing on a knoll facing the city, a sword in a stone on a bare hill, a hermit’s hut with its smoke rising out of the northern woods, the summit cairn with prayer flags, and a shrine on the largest floating island that only flying reaches. None is on the compass; once found, each joins the travel list.
+- **Discovery**: come near something new and a card names it (“You found a new rare flower: Edelweiss”).
+- **Collecting** (`src/discovery/Discovery.ts`, `src/ui/LensUI.ts`): raise the lens (Z or right mouse). Looking down, it finds a flower and you kneel to it; looking out, it stays a telephoto (scroll to zoom, 4–60°). A reticle sits in the middle: frame the subject in it at a good distance, big enough in the frame, hold still, and the focus ring fills; when it locks, the shutter fires and the photo goes into the journal. Brackets snap around the subject and say what is wrong (too far, too close, too small, something in the way, not its hour). A depth probe at the centre of the frame stops grass or a wall in front from counting; the focus pulls onto the subject and the lens parts the grass along the line of sight. Click, Space or Enter shoots any time (free shots go to the album).
+- **The field journal** (J; `src/ui/JournalUI.ts`, `src/discovery/Journal.ts`): flowers, creatures and places, each with the photo that collected it, the time of day, place, focal length, distance and date; unknown entries show the rumour that leads to them. An album keeps every photo (save or delete them; pick any photo of a subject as its journal picture). Progress is kept in localStorage, photos in IndexedDB.
+
+Flying got its feel too (`src/player/FlightFX.ts`): speed lines streaming past, radial blur and colour fringes at the edges as you speed up (`FX.speed` in `src/post/Post.ts`), a FOV kick and a rush of air when you put on speed, grass and petals thrown up at take-off and landing, and the grass flattening in rings under you when you skim low.
+
 ## Run
 
 ```bash
@@ -79,19 +92,21 @@ Space pauses, F toggles fullscreen. Code: `src/trailer/` (`timeline.ts` marks, `
 | mouse | look (click the field to capture the cursor, Esc to free it) |
 | Shift | hurry; keep holding to break into a long stride |
 | C (toggle) / Ctrl (hold) | sink into the grass |
-| Z / hold right mouse | macro lens (finds a flower, parts the grass, depth of field); scroll to zoom |
+| Z / hold right mouse | lens: look down and it finds a flower; scroll to zoom; frame something and hold still to collect it |
+| click / Space / Enter (lens up) | take a photo |
+| J | field journal |
 | B | breathing guide (4 in, 2 hold, 6 out) |
 | G | wander hands-free |
 | T | next time of day |
 | V | fly: take off (thrown ~55 m up), V again to land |
-| in flight | W/S along your gaze (look down to dive, up to climb), A/D sideways, Space up, C/Ctrl down, Shift faster, G autopilot |
+| in flight | W/S along your gaze (look down to dive, up to climb), A/D sideways, Space up, C/Ctrl down, Shift faster, G autopilot, Z lens (click to shoot) |
 | Q | travel: pick a place and go there |
 | H | settings panel |
 | N | music on/off |
 | M | mute |
 | F | fullscreen |
 
-Phones: left thumb walks (floating joystick), right thumb looks.
+Phones: left thumb walks (floating joystick), right thumb looks; with the lens up a shutter button appears on the right.
 
 ## How it works
 
