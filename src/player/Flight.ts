@@ -41,6 +41,8 @@ export class Flight {
   readonly pos = new Vector3();
   readonly vel = new Vector3();
   auto = false;
+  /** Speed multiplier (the serpent's wind makes you faster). */
+  wind = 1;
   roll = 0;
   /** Speed of the last frame (m/s), for wind, FOV and sound. */
   speed = 0;
@@ -142,7 +144,7 @@ export class Flight {
     if (this.auto && this.mode === 'fly') {
       this.autopilot(dt, desired);
     } else {
-      const sp = CRUISE * (input.boost ? BOOST : 1);
+      const sp = CRUISE * this.wind * (input.boost ? BOOST : 1);
       desired.addScaledVector(fwd, input.forward * sp);
       desired.addScaledVector(right, input.strafe * sp * 0.7);
       desired.y += input.lift * sp * 0.65;

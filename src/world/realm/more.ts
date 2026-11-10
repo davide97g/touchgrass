@@ -253,7 +253,8 @@ export function planPillar(plan: Plan, site: Site): void {
     // The great door.
     const R = 32;
     const df = new Frame(cx + dx * (R - 0.6), y0 + 3.6, cz + dz * (R - 0.6), Math.atan2(dx, dz));
-    b.box(df.x, df.y, df.z, 9, 16, 1.6, df.rot, '#1a1e28', M.window, 0.05);
+    // The door slab itself is drawn by Mysteries.ts (it opens); behind it, darkness.
+    b.box(df.wx(0, -0.7), df.y, df.wz(0, -0.7), 9, 16, 0.4, df.rot, '#0a0c12', M.wood, 0.05);
     for (const s of [-1, 1]) b.box(df.wx(s * 5.6, 0), df.y - 0.5, df.wz(s * 5.6, 0), 2.4, 19, 3.4, df.rot, '#d8d4cc', M.stone, r());
     b.box(df.x, df.y + 16, df.z, 13.6, 3.2, 3.4, df.rot, '#d8d4cc', M.stone, r());
     b.box(df.x, df.y + 13.6, df.z, 9.2, 0.5, 1.8, df.rot, '#8fe8ff', M.rune, 0.3);

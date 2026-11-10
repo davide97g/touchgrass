@@ -43,6 +43,40 @@ The realm is full of things to find, and a camera to keep them with.
 - **Collecting** (`src/discovery/Discovery.ts`, `src/ui/LensUI.ts`): raise the lens (Z or right mouse). Looking down, it finds a flower and you kneel to it; looking out, it stays a telephoto (scroll to zoom, 4–60°). A reticle sits in the middle: frame the subject in it at a good distance, big enough in the frame, hold still, and the focus ring fills; when it locks, the shutter fires and the photo goes into the journal. Brackets snap around the subject and say what is wrong (too far, too close, too small, something in the way, not its hour). A depth probe at the centre of the frame stops grass or a wall in front from counting; the focus pulls onto the subject and the lens parts the grass along the line of sight. Click, Space or Enter shoots any time (free shots go to the album).
 - **The field journal** (J; `src/ui/JournalUI.ts`, `src/discovery/Journal.ts`): flowers, creatures and places, each with the photo that collected it, the time of day, place, focal length, distance and date; unknown entries show the rumour that leads to them. An album keeps every photo (save or delete them; pick any photo of a subject as its journal picture). Progress is kept in localStorage, photos in IndexedDB.
 
+## The game: quests, sigils and a door that never opened
+
+On top of the walking and the lens there is now a game to play (`src/game/`, `src/world/game/`, `src/world/life/Mythic.ts`).
+
+- **A story.** A glowing **Waystone** stands a few steps from where you wake, and a small companion light leans toward it. Read it (E) and the main quest opens: five **sigils** keep the door of the Pillar of Ascent shut. Each sleeps where its riddle says: among the ruins of Watcher’s Rise, between the crystals of Shardfield, inside the Old Ring (it answers only on misty mornings), under the cherries of Blossom Hollow (only after sunset), and on the floating island of the Sky Shrine, which only flying reaches. Wake all five, the five sockets on the great door light up, the slab sinks into its threshold, and stepping through lifts you to the crown of the tower, where **Aurelion, the Sky Serpent** has been asleep. It circles the Pillar from then on, and you fly half again as fast.
+- **Quests** (J, first tab): four story chapters and sixteen side quests (gather the lights, befriend animals, the farm, pond and night albums, the legends, all twelve flowers, the nine great places, the seven hidden places, the hermit’s diary, the chests, the wind trial, the blade). Click one to track it: the tracker top-left shows the current step, the compass gets a gold mark with the distance, and the companion light floats toward it.
+- **Experience and ranks.** Everything earns experience (finding, photographing, lights, sigils, pages, chests, quests): ten ranks from Wanderer to Legend of the Fields, with a fanfare at each. It is derived from the journal, so what you had already collected counts.
+- **E: touch things.** Read stones, take diary pages off their posts, open chests, stroke tame animals (walk slowly and sheep, cows, horses, hens, cats and the village sheepdog let you come close; the dog trots over and follows you), sit on the Lone Swing, make a wish at the Moonwell (it marks a sleeping sigil, a chest or a light on your compass and map), try the blade in the stone (it yields only to someone who has seen all nine great places; carrying it, lights drift to you from further away).
+- **Lights to gather.** ~130 drifting lights along the roads, around every landmark, across the fields and in the sky (over the islands, in a stair up the Pillar, around the castle). Walk or fly through them; each one in a row rings a note higher.
+- **Chests and the hermit’s diary.** Twelve chests under lanterns in out-of-the-way corners, each with a relic; eight pages of a diary pinned to posts, which tell what the door is for. Both are kept in the journal’s Lore tab with the sigils’ verses.
+- **The wind trial.** Twelve rings hang in the air from the starting meadow around Windmere’s island to the Old Ring and back. Fly through the first to start the clock; gold under 50 s.
+- **The map** (Tab): an inked parchment drawn from the real terrain, woods, pools and roads. It lies under cloud until you walk or fly over it; places, sigils and opened chests appear as you find them.
+- **Space** jumps.
+
+### New creatures (37 in the journal now)
+
+Highland cattle by the farmsteads, a sheepdog in each village and at the hermit’s hut, red squirrels where the trees stand close, badgers at the wood edges at dusk, a wolf pack in the northern woods after sunset (you hear the howl from far off), brown bears, ravens on the blade’s stone and the Old Ring’s altar, golden eagles over the summit, mute swans and mallards on the pools, pipistrelles tumbling around the towers at dusk, **lantern jellies** drifting over the crystals and the Moonwell at night, **kodama** in the old glades in thin light (they tilt their heads with a rattle and vanish if you step too close), the nine-tailed **Kitsune** of Blossom Hollow after sunset, and the **Cloud Whale**, a village-sized whale with a meadow on its back that crosses the sky whenever the sun is low and sings.
+
+### Anatomy of the animals
+
+Every animal is modelled as an animal, not stacked out of boxes (`src/world/life/creature.ts` the kit, `species.ts` the 21 land species and the swan, mallard and golden eagle):
+
+- **Skins over spines**: bodies, necks, legs, tails, ears and horns are smooth skins lofted along a spline through a few elliptical sections, with a paler underside (belly, throat, inner ear) blended round the section.
+- **Jointed legs**: hoofed legs have shoulder, forearm, knee, cannon, fetlock and a hoof (cloven where it should be); behind, a haunch, stifle and a hock set back. Pawed legs end in a paw with four toes, and claws on wolf, bear and badger. The lower leg folds at the knee while the foot travels forward.
+- **Faces**: glossy eyes with pupil and catchlight that blink, wet noses, lower jaws that chew while grazing (the sheepdog pants when it is pleased), ears that flick and lie back at a run, whiskers on cat and hare.
+- **Coats**: fleece curls on the sheep, mane and forelock on the horse, the long shag and fringe of the highland cattle, a bristle crest on the boar, a ruff on the wolf, a throat mane on the hart, ridged horns on the ibex, branching antlers, the badger's eye stripes, the kitsune's nine tails and shrine bib. Some horses are piebald, some cats tabby, some deer keep their spots.
+- **Fur shader**: clumps and hair grain that stay on the animal as it moves, soft wrapped light, a halo where the sun skims the coat, darker bellies and feet in the grass; wool, feathers (overlapping rows), horn (growth rings), hoof, beak, skin and eye each have their own surface.
+- **Alive**: necks bend along their length to reach the grass, heads turn to follow you while they watch, tails swing in a wave from the root (the dog wags when stroked), flanks breathe, hens beat their wings when they run.
+- **Two models each**: the detailed one within about 40 m (further when you zoom the lens), a lighter stand-in beyond, nothing at all once too small to see.
+
+In development `/?zoo` lines one of each up beside the waking place, raised clear of the grass (`?zoo=walk`, `run`, `graze`, `look`, `happy` to pose them).
+
+Code: `src/game/Game.ts` (save, experience, quest rules), `lore.ts` (riddles, diary, relics, ranks), `Adventure.ts` (glue: what E does, the trial, the fog of war), `src/world/game/Wisps.ts` and `Mysteries.ts` (the lights and everything you can touch), `src/world/life/Mythic.ts` (whale, serpent, kodama, jellies, bats, eagles, waterfowl), new species in `src/world/realm/Fauna.ts`, `src/ui/GameHUD.ts`, `MapUI.ts`, `QuestLog.ts`. The game state lives in `localStorage` under `touchgrass.game.v1`.
+
 Flying got its feel too (`src/player/FlightFX.ts`): speed lines streaming past, radial blur and colour fringes at the edges as you speed up (`FX.speed` in `src/post/Post.ts`), a FOV kick and a rush of air when you put on speed, grass and petals thrown up at take-off and landing, and the grass flattening in rings under you when you skim low.
 
 ## Run
@@ -92,9 +126,12 @@ Space pauses, F toggles fullscreen. Code: `src/trailer/` (`timeline.ts` marks, `
 | mouse | look (click the field to capture the cursor, Esc to free it) |
 | Shift | hurry; keep holding to break into a long stride |
 | C (toggle) / Ctrl (hold) | sink into the grass |
+| Space | jump |
+| E | touch: read, take, open, stroke, sit, wish |
+| Tab | map |
 | Z / hold right mouse | lens: look down and it finds a flower; scroll to zoom; frame something and hold still to collect it |
 | click / Space / Enter (lens up) | take a photo |
-| J | field journal |
+| J | field journal: quests, flowers, creatures, places, lore, album |
 | B | breathing guide (4 in, 2 hold, 6 out) |
 | G | wander hands-free |
 | T | next time of day |

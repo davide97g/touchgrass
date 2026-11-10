@@ -1,528 +1,18 @@
-import {
-  BufferAttribute,
-  BufferGeometry,
-  Color,
-  ConeGeometry,
-  DynamicDrawUsage,
-  Group,
-  InstancedBufferAttribute,
-  InstancedMesh,
-  Matrix4,
-  Quaternion,
-  ShaderMaterial,
-  Vector3,
-} from 'three';
+import { Color, DynamicDrawUsage, Group, InstancedBufferAttribute, InstancedMesh, Matrix4, Quaternion, Vector3 } from 'three';
 import { castShadow, shadowMaterial } from '../../core/Shadows';
-import { U } from '../../core/uniforms';
 import { mountainMask, terrainHeight } from '../common';
 import type { FeatureMap } from '../Features';
 import type { Forest } from './Forest';
-import { Builder, M } from './geom';
 import { hash2, mulberry32, range, type Rng } from './rand';
+import { sampleNoise } from '../../core/noise';
 import { watchtower } from './sites';
 import { cellPools } from '../Features';
 import type { TimeName } from '../../core/params';
 import type { Subject } from '../life/RareFlora';
-import { STRUCT_FRAG } from './Structures';
+import { creatureMaterial } from '../life/creature';
+import { SPECIES, type SpeciesName } from '../life/species';
 import type { Realm } from './World';
 
-const VERT = /* glsl */ `
-attribute vec2 aMat;
-attribute vec3 color;
-attribute float aPart;   // 0 body, 1-4 legs (FL FR BL BR), 5 head and neck, 6 tail
-attribute vec3 aPivot;
-attribute vec4 aAnim;    // stride phase, gait (0 still .. 2 gallop), graze (head down), seed
-uniform float uTime;
-varying vec3 vN;
-varying vec3 vWP;
-varying vec3 vCol;
-varying vec2 vMat;
-
-vec3 rotX(vec3 v, float a) {
-  float c = cos(a);
-  float s = sin(a);
-  return vec3(v.x, v.y * c - v.z * s, v.y * s + v.z * c);
-}
-
-void main() {
-  vec3 p = position;
-  vec3 n = normal;
-  float ph = aAnim.x;
-  float gait = aAnim.y;
-  float graze = aAnim.z;
-  if (aPart > 0.5 && aPart < 4.5) {
-    // Trot: diagonal pairs swing together; a gallop reaches further.
-    float off = (aPart == 1.0 || aPart == 4.0) ? 0.0 : 3.14159;
-    float a = sin(ph + off) * min(gait, 1.0) * 0.55 + sin(ph * 1.0 + off) * max(gait - 1.0, 0.0) * 0.35;
-    p = aPivot + rotX(p - aPivot, a);
-    n = rotX(n, a);
-  } else if (aPart > 4.5 && aPart < 5.5) {
-    float nod = graze * 1.05 + sin(uTime * 1.3 + aAnim.w * 9.0) * 0.06 * (1.0 - graze) + sin(ph * 2.0) * 0.04 * gait;
-    nod += graze * sin(uTime * 4.0 + aAnim.w * 20.0) * 0.08; // nibbling
-    p = aPivot + rotX(p - aPivot, nod);
-    n = rotX(n, nod);
-  } else if (aPart > 5.5) {
-    float wag = sin(uTime * 3.0 + aAnim.w * 12.0) * 0.4;
-    vec3 q = p - aPivot;
-    p = aPivot + vec3(q.x * cos(wag) - q.z * sin(wag) * 0.3, q.y, q.z) + vec3(sin(wag) * q.y * -0.4, 0.0, 0.0);
-  }
-#ifdef HOP
-  // Hares bound: the whole body arcs up and stretches out on each leap.
-  float hop = max(0.0, sin(ph * 0.5));
-  p.y += hop * 0.22 * min(gait, 1.6);
-  p.z *= 1.0 + hop * 0.12 * min(gait, 1.5);
-#else
-  p.y += abs(sin(ph)) * 0.04 * gait;
-#endif
-
-  vec4 wp = modelMatrix * instanceMatrix * vec4(p, 1.0);
-  vWP = wp.xyz;
-  vN = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * n);
-  vCol = color;
-#ifdef USE_INSTANCING_COLOR
-  vCol *= instanceColor;
-#endif
-  vMat = aMat;
-  gl_Position = projectionMatrix * viewMatrix * wp;
-}
-`;
-
-type PartFn = (b: Builder) => void;
-
-const SPIKE = new ConeGeometry(1, 1, 5, 1).translate(0, 0.5, 0);
-
-function assemble(parts: { id: number; pivot: [number, number, number]; fn: PartFn }[]): BufferGeometry {
-  const pos: number[] = [];
-  const nrm: number[] = [];
-  const col: number[] = [];
-  const mat: number[] = [];
-  const part: number[] = [];
-  const piv: number[] = [];
-  for (const p of parts) {
-    const b = new Builder();
-    p.fn(b);
-    const g = b.build();
-    const n = g.getAttribute('position').count;
-    pos.push(...(g.getAttribute('position').array as Float32Array));
-    nrm.push(...(g.getAttribute('normal').array as Float32Array));
-    col.push(...(g.getAttribute('color').array as Float32Array));
-    mat.push(...(g.getAttribute('aMat').array as Float32Array));
-    for (let i = 0; i < n; i++) {
-      part.push(p.id);
-      piv.push(...p.pivot);
-    }
-    g.dispose();
-  }
-  const g = new BufferGeometry();
-  g.setAttribute('position', new BufferAttribute(new Float32Array(pos), 3));
-  g.setAttribute('normal', new BufferAttribute(new Float32Array(nrm), 3));
-  g.setAttribute('color', new BufferAttribute(new Float32Array(col), 3));
-  g.setAttribute('aMat', new BufferAttribute(new Float32Array(mat), 2));
-  g.setAttribute('aPart', new BufferAttribute(new Float32Array(part), 1));
-  g.setAttribute('aPivot', new BufferAttribute(new Float32Array(piv), 3));
-  return g;
-}
-
-function legs(hx: number, hz: number, top: number, w: number, color: string, hoof: string): { id: number; pivot: [number, number, number]; fn: PartFn }[] {
-  const out: { id: number; pivot: [number, number, number]; fn: PartFn }[] = [];
-  const spots: [number, number][] = [[-hx, hz], [hx, hz], [-hx, -hz], [hx, -hz]];
-  spots.forEach(([x, z], i) => {
-    out.push({
-      id: i + 1,
-      pivot: [x, top, z],
-      fn: (b) => {
-        b.box(x, 0.12, z, w, top - 0.1, w, 0, color, M.cloth, 0.5);
-        b.box(x, 0, z, w * 1.1, 0.14, w * 1.15, 0, hoof, M.wood, 0.5);
-      },
-    });
-  });
-  return out;
-}
-
-// Forward is +Z. White-ish albedo where the instance colour should tint the coat.
-const SPECIES = {
-  sheep: () =>
-    assemble([
-      {
-        id: 0,
-        pivot: [0, 0, 0],
-        fn: (b) => {
-          b.blob(0, 0.78, 0, 0.5, 0.42, 0.7, 0, '#ffffff', M.cloth, 0.2);
-          b.blob(0.15, 0.9, 0.25, 0.32, 0.3, 0.35, 1, '#ffffff', M.cloth, 0.4);
-          b.blob(-0.15, 0.88, -0.3, 0.33, 0.3, 0.35, 2, '#ffffff', M.cloth, 0.6);
-        },
-      },
-      {
-        id: 5,
-        pivot: [0, 0.85, 0.55],
-        fn: (b) => {
-          b.box(0, 0.78, 0.82, 0.24, 0.3, 0.36, 0, '#2e2a28', M.cloth, 0.1);
-          b.blob(0, 1.0, 0.68, 0.26, 0.2, 0.22, 0, '#ffffff', M.cloth, 0.3);
-          b.box(0, 0.98, 0.75, 0.5, 0.07, 0.1, 0, '#2e2a28', M.cloth, 0.1);
-        },
-      },
-      ...legs(0.2, 0.38, 0.55, 0.09, '#2e2a28', '#1a1816'),
-      { id: 6, pivot: [0, 0.85, -0.7], fn: (b) => b.blob(0, 0.78, -0.72, 0.12, 0.16, 0.1, 0, '#ffffff', M.cloth, 0.5) },
-    ]),
-  horse: () =>
-    assemble([
-      {
-        id: 0,
-        pivot: [0, 0, 0],
-        fn: (b) => {
-          b.blob(0, 1.38, 0, 0.42, 0.45, 1.0, 0, '#ffffff', M.cloth, 0.5, true);
-          b.blob(0, 1.42, 0.55, 0.42, 0.48, 0.5, 0, '#ffffff', M.cloth, 0.5, true);
-        },
-      },
-      {
-        id: 5,
-        pivot: [0, 1.6, 0.8],
-        fn: (b) => {
-          const q = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.55);
-          b.box(0, 1.45, 0.95, 0.3, 0.95, 0.46, 0, '#ffffff', M.cloth, 0.5, q);
-          b.box(0, 2.0, 1.25, 0.26, 0.28, 0.66, 0, '#ffffff', M.cloth, 0.5);
-          b.box(0, 1.98, 1.58, 0.22, 0.22, 0.12, 0, '#3a302a', M.cloth, 0.1);
-          b.box(0, 1.75, 1.0, 0.08, 0.95, 0.28, 0, '#2a2420', M.cloth, 0.2, q);
-          b.box(0.09, 2.2, 1.05, 0.06, 0.18, 0.06, 0, '#ffffff', M.cloth, 0.5);
-          b.box(-0.09, 2.2, 1.05, 0.06, 0.18, 0.06, 0, '#ffffff', M.cloth, 0.5);
-        },
-      },
-      ...legs(0.24, 0.7, 1.15, 0.13, '#ffffff', '#2a2420'),
-      { id: 6, pivot: [0, 1.5, -0.95], fn: (b) => b.box(0, 0.75, -1.02, 0.12, 0.8, 0.12, 0, '#2a2420', M.cloth, 0.3) },
-    ]),
-  deer: () =>
-    assemble([
-      {
-        id: 0,
-        pivot: [0, 0, 0],
-        fn: (b) => {
-          b.blob(0, 1.05, 0, 0.3, 0.33, 0.68, 0, '#ffffff', M.cloth, 0.5, true);
-          b.blob(0, 0.95, -0.55, 0.18, 0.15, 0.08, 0, '#f4f0e8', M.cloth, 0.9);
-        },
-      },
-      {
-        id: 5,
-        pivot: [0, 1.2, 0.55],
-        fn: (b) => {
-          const q = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.4);
-          b.box(0, 1.1, 0.62, 0.18, 0.7, 0.24, 0, '#ffffff', M.cloth, 0.5, q);
-          b.box(0, 1.72, 0.86, 0.18, 0.2, 0.42, 0, '#ffffff', M.cloth, 0.5);
-          b.box(0, 1.69, 1.08, 0.12, 0.13, 0.08, 0, '#2a2420', M.cloth, 0.1);
-          for (const s of [-1, 1]) {
-            b.box(s * 0.16, 1.88, 0.75, 0.2, 0.08, 0.05, s * 0.3, '#ffffff', M.cloth, 0.5);
-            // Antlers.
-            const qa = new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), s * -0.45);
-            b.box(s * 0.1, 1.85, 0.78, 0.04, 0.6, 0.04, 0, '#d8c8a8', M.wood, 0.7, qa);
-            b.box(s * 0.26, 2.2, 0.82, 0.03, 0.3, 0.03, 0, '#d8c8a8', M.wood, 0.7, new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.5));
-          }
-        },
-      },
-      ...legs(0.16, 0.48, 0.85, 0.07, '#ffffff', '#2a2420'),
-      { id: 6, pivot: [0, 1.1, -0.65], fn: (b) => b.box(0, 1.0, -0.7, 0.1, 0.16, 0.06, 0, '#f4f0e8', M.cloth, 0.8) },
-    ]),
-  boar: () =>
-    assemble([
-      {
-        id: 0,
-        pivot: [0, 0, 0],
-        fn: (b) => {
-          b.blob(0, 0.62, 0, 0.36, 0.38, 0.62, 0, '#ffffff', M.cloth, 0.5);
-          b.blob(0, 0.78, 0.25, 0.3, 0.32, 0.36, 0, '#ffffff', M.cloth, 0.3);
-          b.box(0, 0.9, -0.1, 0.1, 0.12, 0.9, 0, '#2a2018', M.cloth, 0.1);
-        },
-      },
-      {
-        id: 5,
-        pivot: [0, 0.75, 0.5],
-        fn: (b) => {
-          b.box(0, 0.45, 0.6, 0.36, 0.38, 0.42, 0, '#ffffff', M.cloth, 0.5);
-          b.box(0, 0.42, 0.88, 0.2, 0.18, 0.2, 0, '#c89a8a', M.cloth, 0.5);
-          for (const s of [-1, 1]) {
-            b.box(s * 0.13, 0.48, 0.9, 0.04, 0.16, 0.04, 0, '#f4ecd8', M.plaster, 0.5, new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), -0.6));
-            b.box(s * 0.14, 0.72, 0.58, 0.1, 0.14, 0.05, 0, '#ffffff', M.cloth, 0.5);
-          }
-        },
-      },
-      ...legs(0.18, 0.36, 0.42, 0.09, '#ffffff', '#1a1612'),
-      { id: 6, pivot: [0, 0.75, -0.6], fn: (b) => b.box(0, 0.6, -0.64, 0.04, 0.24, 0.04, 0, '#2a2018', M.cloth, 0.5) },
-    ]),
-  chicken: () =>
-    assemble([
-      {
-        id: 0,
-        pivot: [0, 0, 0],
-        fn: (b) => {
-          b.blob(0, 0.32, -0.02, 0.17, 0.16, 0.22, 0, '#ffffff', M.cloth, 0.5, true);
-          b.box(0, 0.36, -0.22, 0.12, 0.2, 0.08, 0, '#ffffff', M.cloth, 0.6, new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), -0.6));
-        },
-      },
-      {
-        id: 5,
-        pivot: [0, 0.4, 0.12],
-        fn: (b) => {
-          b.blob(0, 0.5, 0.17, 0.08, 0.09, 0.08, 0, '#ffffff', M.cloth, 0.5, true);
-          b.box(0, 0.56, 0.17, 0.025, 0.07, 0.09, 0, '#d0302a', M.cloth, 0.2);
-          b.box(0, 0.48, 0.26, 0.03, 0.03, 0.06, 0, '#e8a030', M.cloth, 0.2);
-        },
-      },
-      { id: 1, pivot: [-0.06, 0.2, 0], fn: (b) => b.box(-0.06, 0, 0, 0.025, 0.2, 0.025, 0, '#e8a030', M.cloth, 0.5) },
-      { id: 2, pivot: [0.06, 0.2, 0], fn: (b) => b.box(0.06, 0, 0, 0.025, 0.2, 0.025, 0, '#e8a030', M.cloth, 0.5) },
-    ]),
-  cat: () =>
-    assemble([
-      {
-        id: 0,
-        pivot: [0, 0, 0],
-        fn: (b) => b.blob(0, 0.26, 0, 0.11, 0.11, 0.24, 0, '#ffffff', M.cloth, 0.5, true),
-      },
-      {
-        id: 5,
-        pivot: [0, 0.3, 0.2],
-        fn: (b) => {
-          b.blob(0, 0.36, 0.27, 0.09, 0.08, 0.08, 0, '#ffffff', M.cloth, 0.5, true);
-          for (const sx of [-1, 1]) b.cone(sx * 0.05, 0.41, 0.27, 0.03, 0.07, '#ffffff', M.cloth, 6);
-        },
-      },
-      ...legs(0.06, 0.15, 0.2, 0.035, '#ffffff', '#ffffff'),
-      {
-        id: 6,
-        pivot: [0, 0.3, -0.22],
-        fn: (b) => b.box(0, 0.28, -0.26, 0.03, 0.32, 0.03, 0, '#ffffff', M.cloth, 0.5, new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), -0.5)),
-      },
-    ]),
-  fox: () =>
-    assemble([
-      {
-        id: 0,
-        pivot: [0, 0, 0],
-        fn: (b) => {
-          b.blob(0, 0.4, 0, 0.12, 0.13, 0.3, 0, '#c4602a', M.cloth, 0.5, true);
-          b.blob(0, 0.36, 0.16, 0.1, 0.1, 0.12, 0, '#efe6da', M.cloth, 0.5, true);
-        },
-      },
-      {
-        id: 5,
-        pivot: [0, 0.46, 0.24],
-        fn: (b) => {
-          b.blob(0, 0.5, 0.34, 0.085, 0.08, 0.09, 0, '#c8642c', M.cloth, 0.5, true);
-          b.blob(0, 0.47, 0.44, 0.035, 0.035, 0.08, 0, '#f0e8dc', M.cloth, 0.5, true);
-          b.blob(0, 0.475, 0.52, 0.016, 0.014, 0.014, 0, '#1a1210', M.cloth, 0.1, true);
-          for (const sx of [-1, 1]) {
-            b.cone(sx * 0.05, 0.55, 0.32, 0.034, 0.1, '#b85a28', M.cloth, 6);
-            b.cone(sx * 0.05, 0.62, 0.32, 0.016, 0.04, '#1e1612', M.cloth, 6);
-            b.blob(sx * 0.04, 0.52, 0.42, 0.011, 0.011, 0.008, 0, '#2a1a10', M.cloth, 0.1, true);
-          }
-        },
-      },
-      ...legs(0.06, 0.2, 0.3, 0.035, '#3a2218', '#1a1210'),
-      {
-        id: 6,
-        pivot: [0, 0.42, -0.28],
-        fn: (b) => {
-          b.blob(0, 0.36, -0.46, 0.07, 0.07, 0.2, 0, '#c4602a', M.cloth, 0.5, true);
-          b.blob(0, 0.33, -0.64, 0.045, 0.045, 0.06, 0, '#f4ece0', M.cloth, 0.5, true);
-        },
-      },
-    ]),
-  hare: () =>
-    assemble([
-      {
-        id: 0,
-        pivot: [0, 0, 0],
-        fn: (b) => {
-          b.blob(0, 0.25, 0.02, 0.1, 0.11, 0.17, 0, '#8a6a46', M.cloth, 0.5, true);
-          b.blob(0, 0.22, -0.1, 0.115, 0.12, 0.12, 0, '#8e6c48', M.cloth, 0.5, true);
-          b.blob(0, 0.2, 0.08, 0.07, 0.07, 0.08, 0, '#e8dccb', M.cloth, 0.5, true);
-        },
-      },
-      {
-        id: 5,
-        pivot: [0, 0.3, 0.14],
-        fn: (b) => {
-          b.blob(0, 0.33, 0.22, 0.055, 0.06, 0.075, 0, '#8a6a46', M.cloth, 0.5, true);
-          for (const sx of [-1, 1]) {
-            const q = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), -0.35).multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), sx * 0.15));
-            b.box(sx * 0.025, 0.36, 0.2, 0.034, 0.17, 0.012, 0, '#9a7a52', M.cloth, 0.5, q);
-            b.box(sx * 0.025 + sx * 0.02, 0.52, 0.15, 0.034, 0.03, 0.013, 0, '#1a1410', M.cloth, 0.1, q);
-            b.blob(sx * 0.035, 0.35, 0.25, 0.012, 0.014, 0.012, 0, '#2a1a0a', M.cloth, 0.1, true);
-          }
-        },
-      },
-      { id: 1, pivot: [-0.04, 0.16, 0.1], fn: (b) => b.box(-0.04, 0, 0.11, 0.025, 0.17, 0.03, 0, '#7a5a3a', M.cloth, 0.5) },
-      { id: 2, pivot: [0.04, 0.16, 0.1], fn: (b) => b.box(0.04, 0, 0.11, 0.025, 0.17, 0.03, 0, '#7a5a3a', M.cloth, 0.5) },
-      { id: 3, pivot: [-0.07, 0.2, -0.1], fn: (b) => b.box(-0.07, 0, -0.06, 0.035, 0.05, 0.16, 0, '#7a5a3a', M.cloth, 0.5) },
-      { id: 4, pivot: [0.07, 0.2, -0.1], fn: (b) => b.box(0.07, 0, -0.06, 0.035, 0.05, 0.16, 0, '#7a5a3a', M.cloth, 0.5) },
-      { id: 6, pivot: [0, 0.25, -0.2], fn: (b) => b.blob(0, 0.27, -0.22, 0.04, 0.04, 0.03, 0, '#f6f2ea', M.cloth, 0.5, true) },
-    ]),
-  hedgehog: () =>
-    assemble([
-      {
-        id: 0,
-        pivot: [0, 0, 0],
-        fn: (b) => {
-          b.blob(0, 0.08, 0, 0.1, 0.075, 0.13, 0, '#5a4636', M.cloth, 0.5, true);
-          const r = mulberry32(0x4e6);
-          for (let i = 0; i < 46; i++) {
-            const a = r() * Math.PI * 2;
-            const t = Math.acos(1 - r() * 0.95);
-            const nx = Math.sin(t) * Math.cos(a);
-            const ny = Math.cos(t);
-            const nz = Math.sin(t) * Math.sin(a);
-            if (nz > 0.75) continue;
-            const q = new Quaternion().setFromUnitVectors(new Vector3(0, 1, 0), new Vector3(nx * 0.8, ny, nz * 0.7 - 0.25).normalize());
-            const g = new Matrix4().compose(new Vector3(nx * 0.09, 0.08 + ny * 0.065, nz * 0.12), q, new Vector3(0.014, 0.07, 0.014));
-            b.geometry(SPIKE, g, r() < 0.5 ? '#3a2e24' : '#c8b8a0', M.cloth, 0.3);
-          }
-        },
-      },
-      {
-        id: 5,
-        pivot: [0, 0.07, 0.1],
-        fn: (b) => {
-          b.blob(0, 0.06, 0.14, 0.05, 0.045, 0.06, 0, '#b09a80', M.cloth, 0.5, true);
-          b.blob(0, 0.05, 0.2, 0.02, 0.018, 0.04, 0, '#a08870', M.cloth, 0.5, true);
-          b.blob(0, 0.05, 0.24, 0.011, 0.01, 0.01, 0, '#14100c', M.cloth, 0.1, true);
-          for (const sx of [-1, 1]) b.blob(sx * 0.025, 0.075, 0.17, 0.008, 0.008, 0.006, 0, '#0a0806', M.cloth, 0.1, true);
-        },
-      },
-      ...legs(0.05, 0.07, 0.04, 0.018, '#6a5440', '#3a2a1e'),
-    ]),
-  ibex: () =>
-    assemble([
-      {
-        id: 0,
-        pivot: [0, 0, 0],
-        fn: (b) => {
-          b.blob(0, 0.78, 0, 0.21, 0.24, 0.44, 0, '#8a7a62', M.cloth, 0.5, true);
-          b.blob(0, 0.68, 0.05, 0.16, 0.12, 0.3, 0, '#c8bca4', M.cloth, 0.5, true);
-          b.box(0, 0.95, -0.1, 0.06, 0.08, 0.6, 0, '#4a3e30', M.cloth, 0.2);
-        },
-      },
-      {
-        id: 5,
-        pivot: [0, 0.9, 0.36],
-        fn: (b) => {
-          const qn = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.45);
-          b.box(0, 0.85, 0.42, 0.14, 0.42, 0.16, 0, '#7e6e58', M.cloth, 0.5, qn);
-          b.box(0, 1.12, 0.56, 0.13, 0.15, 0.26, 0, '#8a7a62', M.cloth, 0.5);
-          b.box(0, 1.03, 0.66, 0.05, 0.12, 0.05, 0, '#3a3024', M.cloth, 0.3);
-          for (const sx of [-1, 1]) {
-            // Great ridged horns sweeping back in an arc.
-            let y = 1.2;
-            let z = 0.56;
-            for (let k = 0; k < 8; k++) {
-              const a = 0.25 + k * 0.28;
-              const q = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), -a);
-              b.box(sx * (0.045 + k * 0.006), y, z, 0.05 - k * 0.003, 0.11, 0.06 - k * 0.003, 0, k % 2 ? '#5a4e40' : '#6a5c4a', M.wood, 0.5, q);
-              y += Math.cos(a) * 0.09;
-              z -= Math.sin(a) * 0.09;
-            }
-            b.box(sx * 0.08, 1.16, 0.5, 0.08, 0.04, 0.03, sx * 0.4, '#7e6e58', M.cloth, 0.5);
-          }
-        },
-      },
-      ...legs(0.13, 0.3, 0.6, 0.065, '#6a5a48', '#2a2420'),
-      { id: 6, pivot: [0, 0.9, -0.42], fn: (b) => b.box(0, 0.82, -0.46, 0.06, 0.12, 0.05, 0, '#4a3e30', M.cloth, 0.5) },
-    ]),
-  hart: () =>
-    assemble([
-      {
-        id: 0,
-        pivot: [0, 0, 0],
-        fn: (b) => {
-          b.blob(0, 1.15, 0, 0.33, 0.36, 0.76, 0, '#f4f2ee', M.cloth, 0.5, true);
-          b.blob(0, 1.25, 0.5, 0.3, 0.34, 0.32, 0, '#f8f6f2', M.cloth, 0.5, true);
-        },
-      },
-      {
-        id: 5,
-        pivot: [0, 1.3, 0.6],
-        fn: (b) => {
-          const q = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.4);
-          b.box(0, 1.2, 0.7, 0.2, 0.78, 0.27, 0, '#f4f2ee', M.cloth, 0.5, q);
-          b.box(0, 1.9, 0.96, 0.2, 0.22, 0.46, 0, '#f8f6f2', M.cloth, 0.5);
-          b.box(0, 1.87, 1.2, 0.13, 0.14, 0.08, 0, '#3a3438', M.cloth, 0.1);
-          for (const s of [-1, 1]) {
-            b.box(s * 0.17, 2.06, 0.84, 0.22, 0.08, 0.05, s * 0.3, '#f4f2ee', M.cloth, 0.5);
-            b.blob(s * 0.1, 1.95, 1.08, 0.025, 0.025, 0.02, 0, '#1a1a24', M.cloth, 0.1, true);
-            // A crown of antlers, many tines, glowing faintly like frost.
-            let x = s * 0.09;
-            let y = 2.04;
-            let z = 0.86;
-            for (let k = 0; k < 7; k++) {
-              const ax = new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), s * (-0.5 + k * 0.06)).multiply(new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), -0.25 - k * 0.05));
-              b.box(x, y, z, 0.045 - k * 0.004, 0.2, 0.045 - k * 0.004, 0, '#e8f8ff', M.crystal, 0.3 + k * 0.05, ax);
-              const dir = new Vector3(0, 0.2, 0).applyQuaternion(ax);
-              if (k > 1 && k < 6) {
-                const tq = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.6).premultiply(ax);
-                b.box(x, y + 0.05, z, 0.026, 0.18, 0.026, 0, '#e8f8ff', M.crystal, 0.6, tq);
-              }
-              x += dir.x;
-              y += dir.y;
-              z += dir.z;
-            }
-          }
-        },
-      },
-      ...legs(0.18, 0.55, 1.0, 0.08, '#f0eee8', '#8a8a90'),
-      { id: 6, pivot: [0, 1.25, -0.72], fn: (b) => b.box(0, 1.12, -0.78, 0.12, 0.2, 0.07, 0, '#ffffff', M.cloth, 0.8) },
-    ]),
-  owl: () =>
-    assemble([
-      {
-        id: 0,
-        pivot: [0, 0, 0],
-        fn: (b) => {
-          b.blob(0, 0.17, 0, 0.11, 0.17, 0.1, 0, '#8a6a4a', M.cloth, 0.5, true);
-          b.blob(0, 0.15, 0.05, 0.08, 0.12, 0.06, 0, '#c8a880', M.cloth, 0.5, true);
-          for (const sx of [-1, 1]) b.blob(sx * 0.09, 0.16, -0.02, 0.035, 0.13, 0.08, 0, '#6a4e36', M.cloth, 0.5, true);
-          for (const sx of [-1, 1]) b.box(sx * 0.03, 0, 0.04, 0.02, 0.03, 0.04, 0, '#c8a040', M.cloth, 0.5);
-        },
-      },
-      {
-        id: 5,
-        pivot: [0, 0.3, 0],
-        fn: (b) => {
-          b.blob(0, 0.36, 0.01, 0.1, 0.085, 0.09, 0, '#8a6a4a', M.cloth, 0.5, true);
-          b.blob(0, 0.36, 0.07, 0.075, 0.06, 0.03, 0, '#c8aa86', M.cloth, 0.5, true);
-          for (const sx of [-1, 1]) {
-            b.blob(sx * 0.033, 0.37, 0.095, 0.018, 0.018, 0.01, 0, '#1a1208', M.lamp, 0.15, true);
-          }
-          b.cone(0, 0.32, 0.1, 0.012, 0.03, '#d8b878', M.cloth, 6);
-        },
-      },
-      { id: 6, pivot: [0, 0.08, -0.08], fn: (b) => b.box(0, 0.02, -0.1, 0.08, 0.1, 0.03, 0, '#6a4e36', M.cloth, 0.5) },
-    ]),
-  heron: () =>
-    assemble([
-      {
-        id: 0,
-        pivot: [0, 0, 0],
-        fn: (b) => {
-          b.blob(0, 0.78, 0, 0.12, 0.13, 0.26, 0, '#9aa0a8', M.cloth, 0.5, true);
-          b.blob(0, 0.75, -0.24, 0.08, 0.06, 0.16, 0, '#5a6068', M.cloth, 0.5, true);
-          b.blob(0, 0.72, 0.1, 0.09, 0.1, 0.12, 0, '#d8dce0', M.cloth, 0.5, true);
-        },
-      },
-      {
-        id: 5,
-        pivot: [0, 0.86, 0.18],
-        fn: (b) => {
-          const q = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.25);
-          b.box(0, 0.86, 0.2, 0.05, 0.36, 0.06, 0, '#e8eaec', M.cloth, 0.5, q);
-          b.blob(0, 1.22, 0.3, 0.045, 0.045, 0.07, 0, '#f0f2f4', M.cloth, 0.5, true);
-          b.box(0, 1.25, 0.28, 0.08, 0.018, 0.12, 0, '#1a1c20', M.cloth, 0.1);
-          const qb = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), Math.PI / 2 + 0.1);
-          b.box(0, 1.22, 0.34, 0.018, 0.16, 0.022, 0, '#d8a040', M.cloth, 0.3, qb);
-          for (const sx of [-1, 1]) b.blob(sx * 0.03, 1.235, 0.33, 0.008, 0.008, 0.006, 0, '#f0d040', M.cloth, 0.1, true);
-        },
-      },
-      { id: 1, pivot: [-0.05, 0.65, 0], fn: (b) => b.box(-0.05, 0, 0, 0.02, 0.66, 0.02, 0, '#7a6a4a', M.cloth, 0.5) },
-      { id: 4, pivot: [0.05, 0.65, 0], fn: (b) => b.box(0.05, 0, 0, 0.02, 0.66, 0.02, 0, '#7a6a4a', M.cloth, 0.5) },
-    ]),
-};
-
-export type SpeciesName = keyof typeof SPECIES;
 
 interface Trait {
   walk: number;
@@ -536,15 +26,17 @@ interface Trait {
   still?: boolean;
   /** Height of the body centre and rough radius (for the lens). */
   body: [number, number];
+  /** Lets a slow, gentle visitor come close enough to touch. */
+  tame?: boolean;
 }
 
 const TRAITS: Record<SpeciesName, Trait> = {
-  sheep: { walk: 0.55, run: 2.6, flee: 5, stride: 0.9, turn: 2, body: [0.8, 0.6] },
-  horse: { walk: 1.1, run: 5.5, flee: 7, stride: 1.9, turn: 1.4, body: [1.45, 1.1] },
+  sheep: { walk: 0.55, run: 2.6, flee: 5, stride: 0.9, turn: 2, body: [0.8, 0.6], tame: true },
+  horse: { walk: 1.1, run: 5.5, flee: 7, stride: 1.9, turn: 1.4, body: [1.45, 1.1], tame: true },
   deer: { walk: 0.9, run: 7.5, flee: 22, stride: 1.5, turn: 3, body: [1.15, 0.8] },
   boar: { walk: 0.6, run: 4.5, flee: 9, stride: 0.8, turn: 2.5, body: [0.65, 0.6] },
-  chicken: { walk: 0.35, run: 2.2, flee: 2.5, stride: 0.18, turn: 5, body: [0.32, 0.2] },
-  cat: { walk: 0.5, run: 3.5, flee: 3, stride: 0.35, turn: 4, body: [0.28, 0.25] },
+  chicken: { walk: 0.35, run: 2.2, flee: 2.5, stride: 0.18, turn: 5, body: [0.32, 0.2], tame: true },
+  cat: { walk: 0.5, run: 3.5, flee: 3, stride: 0.35, turn: 4, body: [0.28, 0.25], tame: true },
   fox: { walk: 0.8, run: 6.5, flee: 9, stride: 0.55, turn: 3.5, body: [0.42, 0.35], when: ['Golden hour', 'Dusk', 'Misty dawn'] },
   hare: { walk: 0.7, run: 8, flee: 6, stride: 0.75, turn: 4, body: [0.27, 0.22] },
   hedgehog: { walk: 0.22, run: 0.5, flee: 1.6, stride: 0.07, turn: 2, body: [0.1, 0.13], when: ['Dusk', 'Misty dawn'] },
@@ -552,7 +44,18 @@ const TRAITS: Record<SpeciesName, Trait> = {
   hart: { walk: 0.8, run: 6, flee: 14, stride: 1.6, turn: 2, body: [1.3, 0.9], when: ['Misty dawn'] },
   owl: { walk: 0, run: 0, flee: 0, stride: 1, turn: 1.5, body: [0.24, 0.18], when: ['Dusk', 'Misty dawn'], still: true },
   heron: { walk: 0.3, run: 0.6, flee: 7, stride: 0.6, turn: 1.5, body: [0.85, 0.45] },
+  cow: { walk: 0.45, run: 2.4, flee: 4, stride: 1.2, turn: 1.2, body: [1.05, 1.0], tame: true },
+  dog: { walk: 1.2, run: 5.5, flee: 0, stride: 0.5, turn: 5, body: [0.48, 0.4], tame: true },
+  wolf: { walk: 1.0, run: 8, flee: 16, stride: 0.9, turn: 3.5, body: [0.72, 0.55], when: ['Dusk'] },
+  bear: { walk: 0.6, run: 5, flee: 7, stride: 1.2, turn: 1.4, body: [0.95, 1.0] },
+  squirrel: { walk: 0.9, run: 4.5, flee: 5, stride: 0.3, turn: 6, body: [0.1, 0.1] },
+  badger: { walk: 0.4, run: 2.2, flee: 5, stride: 0.3, turn: 2.5, body: [0.22, 0.3], when: ['Dusk', 'Misty dawn'] },
+  raven: { walk: 0, run: 0, flee: 0, stride: 1, turn: 2, body: [0.2, 0.2], still: true },
+  kitsune: { walk: 0.7, run: 7, flee: 6, stride: 0.8, turn: 3, body: [0.68, 0.6], when: ['Dusk'] },
 };
+
+const ZOO = import.meta.env.DEV ? new URLSearchParams(location.search).get('zoo') : null;
+export const ZOO_AT = { x: -60, z: -100 };
 
 interface Animal {
   sp: SpeciesName;
@@ -567,7 +70,9 @@ interface Animal {
   y: number;
   heading: number;
   speed: number;
-  state: 'graze' | 'walk' | 'flee' | 'look';
+  state: 'graze' | 'walk' | 'flee' | 'look' | 'follow';
+  /** Seconds of contentment left after being petted. */
+  happy: number;
   t: number;
   tx: number;
   tz: number;
@@ -577,7 +82,23 @@ interface Animal {
   graze: number;
   seed: number;
   scale: number;
+  coat: Color;
+  /** Head turned toward the visitor (radians) and how pleased it is (0 .. 1). */
+  look: number;
+  mood: number;
+  /** Stands in the line-up for inspection (development only). */
+  zoo?: boolean;
 }
+
+interface Lod {
+  mesh: InstancedMesh;
+  anim: InstancedBufferAttribute;
+  anim2: InstancedBufferAttribute;
+  n: number;
+}
+
+/** How far the detailed model is used, and how far the smaller animals are drawn at all. */
+const NEAR = 42;
 
 const COATS: Record<SpeciesName, string[]> = {
   sheep: ['#f2eee4', '#ece6da', '#f6f2ea', '#d8d2c6', '#5a5048'],
@@ -593,6 +114,14 @@ const COATS: Record<SpeciesName, string[]> = {
   hart: ['#ffffff'],
   owl: ['#ffffff'],
   heron: ['#ffffff'],
+  cow: ['#b05a2c', '#a04e24', '#c06a36', '#8a4420', '#d8b890', '#2e2622'],
+  dog: ['#ffffff'],
+  wolf: ['#ffffff', '#e8e4e0', '#c8c8cc'],
+  bear: ['#6a4a30', '#5a3e28', '#7a5636'],
+  squirrel: ['#ffffff'],
+  badger: ['#ffffff'],
+  raven: ['#ffffff'],
+  kitsune: ['#ffffff'],
 };
 
 /**
@@ -603,7 +132,9 @@ const COATS: Record<SpeciesName, string[]> = {
 export class Fauna {
   readonly group = new Group();
   private readonly animals: Animal[] = [];
-  private readonly meshes = new Map<SpeciesName, { mesh: InstancedMesh; anim: InstancedBufferAttribute }>();
+  private readonly meshes = new Map<SpeciesName, { hi: Lod; lo: Lod }>();
+  private readonly eye = new Vector3(0, -1e5, 0);
+  private zoom = 1;
   private readonly m = new Matrix4();
   private readonly q = new Quaternion();
   private readonly v = new Vector3();
@@ -612,7 +143,7 @@ export class Fauna {
 
   constructor(private readonly realm: Realm, private readonly features: FeatureMap, private readonly forest: Forest) {
     const r = mulberry32(0xa11a);
-    type Herd = { sp: SpeciesName; x: number; z: number; r: number; n: number; perch?: { y: number; heading: number } };
+    type Herd = { sp: SpeciesName; x: number; z: number; r: number; n: number; perch?: { y: number; heading: number }; zoo?: boolean };
     const herds: Herd[] = [];
     for (const p of realm.plan.pastures) herds.push({ sp: p.kind, x: p.x, z: p.z, r: p.r, n: p.kind === 'sheep' ? 12 : 7 });
     for (const f of realm.plan.flocks) herds.push({ sp: f.kind, x: f.x, z: f.z, r: f.r, n: f.n });
@@ -643,6 +174,51 @@ export class Fauna {
       { sp: 'ibex', x: -1900, z: 560, r: 90, n: 4 },
       { sp: 'ibex', x: -1720, z: 250, r: 70, n: 3 },
     );
+    // Highland cattle beside the farmsteads, a sheepdog in each village.
+    for (const f of realm.plan.flocks) {
+      if (f.kind !== 'chicken') continue;
+      const village = realm.sites.some((q) => q.kind === 'village' && Math.hypot(q.x - f.x, q.z - f.z) < 5);
+      if (village) herds.push({ sp: 'dog', x: f.x, z: f.z, r: 16, n: 1 });
+      else herds.push({ sp: 'cow', x: f.x + 26, z: f.z + 18, r: 30, n: 2 + (hash2(f.x, f.z, 2) > 0.5 ? 1 : 0) });
+    }
+    const hutQ = realm.plan.secrets.find((q) => q.id === 'hut');
+    if (hutQ) {
+      herds.push({ sp: 'dog', x: hutQ.approach.x, z: hutQ.approach.z, r: 8, n: 1 });
+      // The pack that sings in the northern woods.
+      herds.push({ sp: 'wolf', x: hutQ.x + 110, z: hutQ.z - 70, r: 70, n: 3 });
+    }
+    const wellQ = realm.plan.secrets.find((q) => q.id === 'moonwell');
+    herds.push({ sp: 'bear', x: wellQ ? wellQ.x - 90 : -300, z: wellQ ? wellQ.z + 60 : 800, r: 60, n: 1 });
+    herds.push({ sp: 'bear', x: -1380, z: 120, r: 70, n: 1 });
+    // Squirrels where the trees stand close, badgers along the wood edges.
+    {
+      const woods: { x: number; z: number; w: number }[] = [];
+      for (let x = -1500; x <= 1000; x += 90) {
+        for (let z = -1100; z <= 1100; z += 90) {
+          const w = sampleNoise(x / 1500 + 0.17, z / 1500 + 0.53, 1);
+          if (w > 0.57 && mountainMask(x, z) < 0.02 && realm.map.roadDist(x, z) > 25 && !realm.sites.some((q) => Math.hypot(q.x - x, q.z - z) < q.r + 30)) woods.push({ x, z, w });
+        }
+      }
+      const far = (list: { x: number; z: number }[], p: { x: number; z: number }, d: number) => list.every((q) => Math.hypot(q.x - p.x, q.z - p.z) > d);
+      const sq: { x: number; z: number }[] = [];
+      for (const p of woods.filter((p) => p.w > 0.66).sort((a, b) => Math.hypot(a.x + 80, a.z + 120) - Math.hypot(b.x + 80, b.z + 120))) {
+        if (sq.length < 8 && far(sq, p, 260)) sq.push(p);
+      }
+      for (const p of sq) herds.push({ sp: 'squirrel', x: p.x, z: p.z, r: 22, n: 2 });
+      const bd: { x: number; z: number }[] = [];
+      for (const p of woods.filter((p) => p.w < 0.62).sort((a, b) => hash2(a.x, a.z, 7) - hash2(b.x, b.z, 7))) {
+        if (bd.length < 5 && far(bd, p, 420)) bd.push(p);
+      }
+      for (const p of bd) herds.push({ sp: 'badger', x: p.x, z: p.z, r: 30, n: 1 });
+    }
+    // A raven on the stone of the unclaimed blade, another on the altar of the Old Ring.
+    const bladeQ = realm.plan.secrets.find((q) => q.id === 'blade');
+    if (bladeQ) herds.push({ sp: 'raven', x: bladeQ.x + 0.75, z: bladeQ.z - 0.25, r: 0, n: 1, perch: { y: terrainHeight(bladeQ.x, bladeQ.z) + 0.5, heading: 0.9 } });
+    const ringS = realm.sites.find((q) => q.kind === 'ring');
+    if (ringS) herds.push({ sp: 'raven', x: ringS.x + 1.1, z: ringS.z - 0.3, r: 0, n: 1, perch: { y: ringS.level + 0.9, heading: 2.4 } });
+    // The guardian of the shrine among the cherries.
+    const groveS = realm.sites.find((q) => q.kind === 'grove');
+    if (groveS) herds.push({ sp: 'kitsune', x: groveS.x, z: groveS.z, r: groveS.r * 0.9, n: 1 });
     // Hedgehogs in every farmyard.
     for (const f of realm.plan.flocks) if (f.kind === 'chicken') herds.push({ sp: 'hedgehog', x: f.x, z: f.z, r: Math.max(10, f.r), n: 1 });
     // The pale hart walks the glade of the fairy ring.
@@ -672,6 +248,11 @@ export class Fauna {
       herds.push({ sp: 'heron', x: p.x + Math.cos(a) * d, z: p.z + Math.sin(a) * d, r: 2.5, n: 1, perch: { y: NaN, heading: Math.atan2(p.x - (p.x + Math.cos(a) * d), p.z - (p.z + Math.sin(a) * d)) } });
     }
 
+    // Development: one of each kind lined up beside the waking place (?zoo, ?zoo=walk|run|graze|look|happy).
+    if (ZOO !== null) {
+      (Object.keys(SPECIES) as SpeciesName[]).forEach((sp, i) => herds.push({ sp, x: ZOO_AT.x + (i % 7) * 3.2, z: ZOO_AT.z + Math.floor(i / 7) * 4, r: 0, n: 1, zoo: true, perch: { y: terrainHeight(ZOO_AT.x + (i % 7) * 3.2, ZOO_AT.z + Math.floor(i / 7) * 4) + 0.8, heading: Math.PI / 2 } }));
+    }
+
     const counts = Object.fromEntries(Object.keys(SPECIES).map((k) => [k, 0])) as Record<SpeciesName, number>;
     for (const h of herds) {
       for (let k = 0; k < h.n; k++) {
@@ -699,6 +280,7 @@ export class Fauna {
           heading: h.perch ? h.perch.heading : r() * Math.PI * 2,
           speed: 0,
           state: 'graze',
+          happy: 0,
           t: range(r, 1, 12),
           tx: x,
           tz: z,
@@ -707,50 +289,56 @@ export class Fauna {
           gait: 0,
           graze: 1,
           seed: r(),
-          scale: range(r, 0.88, 1.12) * (h.sp === 'deer' && r() < 0.6 ? 0.85 : 1) * (h.sp === 'hart' ? 1.15 : 1),
+          scale: range(r, 0.88, 1.12) * (h.sp === 'deer' && r() < 0.6 ? 0.85 : 1) * (h.sp === 'hart' ? 1.15 : 1) * (h.sp === 'kitsune' ? 1.5 : 1),
+          coat: new Color(),
+          look: 0,
+          mood: 0,
+          zoo: h.zoo,
         });
       }
     }
 
-    const mat = new ShaderMaterial({
-      uniforms: { ...U, uHaze: { value: 0 }, uGroundAO: { value: 1 }, uFogK: { value: 1 } },
-      vertexShader: VERT,
-      fragmentShader: STRUCT_FRAG,
-    });
-    const hop = new ShaderMaterial({
-      uniforms: mat.uniforms,
-      vertexShader: VERT,
-      fragmentShader: STRUCT_FRAG,
-      defines: { HOP: '' },
-    });
-    const coat = new Color();
+    const mat = creatureMaterial();
+    const hop = creatureMaterial(true);
+    hop.uniforms = mat.uniforms;
+    const white = new Color('#ffffff');
     for (const sp of Object.keys(SPECIES) as SpeciesName[]) {
       const n = counts[sp];
       if (!n) continue;
-      const geo = SPECIES[sp]();
-      const anim = new InstancedBufferAttribute(new Float32Array(n * 4), 4);
-      anim.setUsage(DynamicDrawUsage);
-      geo.setAttribute('aAnim', anim);
-      const m = sp === 'hare' ? hop : mat;
-      const mesh = new InstancedMesh(geo, m, n);
-      mesh.instanceMatrix.setUsage(DynamicDrawUsage);
-      mesh.frustumCulled = false;
-      castShadow(mesh, shadowMaterial(m));
+      const m = sp === 'hare' || sp === 'squirrel' ? hop : mat;
+      const shadow = shadowMaterial(m);
+      const lod = (detail: number): Lod => {
+        const geo = SPECIES[sp](detail);
+        const anim = new InstancedBufferAttribute(new Float32Array(n * 4), 4);
+        const anim2 = new InstancedBufferAttribute(new Float32Array(n * 2), 2);
+        anim.setUsage(DynamicDrawUsage);
+        anim2.setUsage(DynamicDrawUsage);
+        geo.setAttribute('aAnim', anim);
+        geo.setAttribute('aAnim2', anim2);
+        const mesh = new InstancedMesh(geo, m, n);
+        mesh.instanceMatrix.setUsage(DynamicDrawUsage);
+        mesh.frustumCulled = false;
+        castShadow(mesh, shadow);
+        for (let i = 0; i < n; i++) mesh.setColorAt(i, white);
+        mesh.instanceColor!.setUsage(DynamicDrawUsage);
+        mesh.count = 0;
+        this.group.add(mesh);
+        return { mesh, anim, anim2, n: 0 };
+      };
+      this.meshes.set(sp, { hi: lod(1), lo: lod(0.45) });
       const rc = mulberry32(sp.length * 977);
-      for (let i = 0; i < n; i++) {
-        coat.set(COATS[sp][Math.floor(rc() * COATS[sp].length)]);
-        if (sp === 'sheep' && rc() < 0.85) coat.set(COATS.sheep[Math.floor(rc() * 3)]);
-        mesh.setColorAt(i, coat);
+      for (const a of this.animals) {
+        if (a.sp !== sp) continue;
+        a.coat.set(COATS[sp][Math.floor(rc() * COATS[sp].length)]);
+        if (sp === 'sheep' && rc() < 0.85) a.coat.set(COATS.sheep[Math.floor(rc() * 3)]);
       }
-      this.meshes.set(sp, { mesh, anim });
-      this.group.add(mesh);
     }
     this.update(0, 0, 0, 0, 'Noon');
   }
 
   private walkable(x: number, z: number, sp: SpeciesName = 'sheep'): boolean {
     const map = this.realm.map;
-    const tame = sp === 'chicken' || sp === 'cat' || sp === 'hedgehog';
+    const tame = sp === 'chicken' || sp === 'cat' || sp === 'hedgehog' || sp === 'dog';
     const mm = mountainMask(x, z);
     const alpine = sp === 'ibex';
     return (
@@ -758,7 +346,7 @@ export class Fauna {
       map.solidAt(x, z) < 0.2 &&
       (tame || map.roadAt(x, z) < 0.6) &&
       (alpine ? mm > 0.06 && terrainHeight(x, z) < 330 : mm < 0.35) &&
-      !this.forest.blocked(x, z, 0.6)
+      !this.forest.blocked(x, z, sp === 'squirrel' ? 0.25 : 0.6)
     );
   }
 
@@ -778,11 +366,26 @@ export class Fauna {
     a.tz = a.home.z;
   }
 
+  /** Where the camera is and how far it is zoomed in: decides which animals get the detailed model. */
+  view(eye: Vector3, zoom: number): void {
+    this.eye.copy(eye);
+    this.zoom = zoom;
+  }
+
   update(dt: number, px: number, pz: number, playerSpeed: number, tod: TimeName): void {
     const r = Math.random;
     for (const a of this.animals) {
       const tr = TRAITS[a.sp];
       const dp = Math.hypot(a.x - px, a.z - pz);
+      if (a.zoo) {
+        // The line-up: stand still, graze or stride on the spot as asked.
+        a.gait = ZOO === 'walk' ? 1 : ZOO === 'run' ? 2 : 0;
+        a.graze += ((ZOO === 'graze' ? 1 : 0) - a.graze) * Math.min(1, dt * 1.8);
+        a.phase += a.gait * 3.2 * dt;
+        a.mood = ZOO === 'happy' ? 1 : 0;
+        a.look = ZOO === 'look' ? Math.max(-1.1, Math.min(1.1, turnTo(0, Math.atan2(px - a.x, pz - a.z) - a.heading, 9))) : 0;
+        continue;
+      }
       const out = !tr.when || tr.when.includes(tod);
       // Out of hours: wander off and vanish where nobody sees; back once it's their time again.
       if (!out && !a.hidden) {
@@ -803,7 +406,22 @@ export class Fauna {
       }
       if (a.hidden || (dp > 700 && dt > 0)) continue; // nobody is watching
       a.t -= dt;
-      const spook = !tr.still && !a.away && dp < tr.flee * (playerSpeed > 2 ? 2.2 : 1);
+      a.happy = Math.max(0, a.happy - dt);
+      // Tame animals let a slow, gentle visitor walk right up to them.
+      const calm = tr.tame && (playerSpeed < 1.5 || a.happy > 0) ? 0.22 : 1;
+      const spook = !tr.still && !a.away && dp < tr.flee * (playerSpeed > 2 ? 2.2 : 1) * calm;
+      // The sheepdog trots over and keeps you company.
+      if (a.sp === 'dog' && !spook) {
+        if (dp < 34 && dp > 2.6) {
+          a.state = 'follow';
+          a.tx = px;
+          a.tz = pz;
+          a.t = 1;
+        } else if (a.state === 'follow') {
+          a.state = 'look';
+          a.t = 3;
+        }
+      }
       if (spook && a.state !== 'flee') {
         a.state = 'flee';
         a.t = range(r, 2.5, 4.5);
@@ -836,6 +454,8 @@ export class Fauna {
           a.state = 'graze';
           a.t = range(r, 4, 14);
         }
+      } else if (a.state === 'follow') {
+        targetSpeed = dp > 9 ? tr.run : tr.walk * 1.4;
       } else if (a.state === 'walk') {
         targetSpeed = tr.walk;
         if (!a.away && (Math.hypot(a.tx - a.x, a.tz - a.z) < 1.5 || a.t <= 0)) {
@@ -870,21 +490,44 @@ export class Fauna {
         }
       }
       a.gait = a.speed / Math.max(tr.walk, 0.01) > 1.5 ? 1 + Math.min(1, a.speed / tr.run) : a.speed / Math.max(tr.walk, 0.01);
+      // The head follows the visitor while it watches; a stroked animal is pleased for a while.
+      const watching = a.state === 'look' || (a.state === 'follow' && dp < 6) || (a.happy > 0 && dp < 8);
+      const want = watching && !tr.still ? Math.max(-1.1, Math.min(1.1, turnTo(0, Math.atan2(px - a.x, pz - a.z) - a.heading, 9))) : 0;
+      a.look += (want - a.look) * Math.min(1, dt * 4);
+      a.mood += ((a.happy > 0 ? 1 : a.state === 'follow' ? 0.5 : 0) - a.mood) * Math.min(1, dt * 3);
       a.phase += (a.speed / tr.stride) * Math.PI * dt;
       if (a.perch !== null) a.y = a.perch;
       else a.y += (terrainHeight(a.x, a.z) - a.y) * Math.min(1, dt * 10 + (dt === 0 ? 1 : 0));
     }
 
-    for (const [sp, { mesh, anim }] of this.meshes) {
-      for (const a of this.animals) {
-        if (a.sp !== sp) continue;
-        this.q.setFromAxisAngle(this.up, a.heading);
-        this.m.compose(this.v.set(a.x, a.y, a.z), this.q, this.s.setScalar(a.hidden ? 0 : a.scale));
-        mesh.setMatrixAt(a.i, this.m);
-        anim.setXYZW(a.i, a.phase, a.gait, a.graze, a.seed);
+    // Up close the detailed model, further off the stand-in; out of sight nothing at all.
+    for (const l of this.meshes.values()) l.hi.n = l.lo.n = 0;
+    const near = NEAR * this.zoom;
+    for (const a of this.animals) {
+      if (a.hidden) continue;
+      const d = Math.hypot(a.x - this.eye.x, a.y - this.eye.y, a.z - this.eye.z);
+      const size = TRAITS[a.sp].body[1] * a.scale;
+      if (d > Math.min(1400, size * 900 * this.zoom + 120)) continue;
+      const l = this.meshes.get(a.sp)!;
+      const t = d < near ? l.hi : l.lo;
+      const i = t.n++;
+      this.q.setFromAxisAngle(this.up, a.heading);
+      this.m.compose(this.v.set(a.x, a.y, a.z), this.q, this.s.setScalar(a.scale));
+      t.mesh.setMatrixAt(i, this.m);
+      t.mesh.setColorAt(i, a.coat);
+      t.anim.setXYZW(i, a.phase, a.gait, a.graze, a.seed);
+      t.anim2.setXY(i, a.look, a.mood);
+    }
+    for (const l of this.meshes.values()) {
+      for (const t of [l.hi, l.lo]) {
+        t.mesh.count = t.n;
+        t.mesh.visible = t.n > 0;
+        if (!t.n) continue;
+        t.mesh.instanceMatrix.needsUpdate = true;
+        t.mesh.instanceColor!.needsUpdate = true;
+        t.anim.needsUpdate = true;
+        t.anim2.needsUpdate = true;
       }
-      mesh.instanceMatrix.needsUpdate = true;
-      anim.needsUpdate = true;
     }
   }
 
@@ -896,6 +539,36 @@ export class Fauna {
       const tr = TRAITS[a.sp];
       out.push({ id: a.sp, x: a.x, y: a.y + tr.body[0] * a.scale, z: a.z, r: tr.body[1] * a.scale });
     }
+  }
+
+  /** A tame animal close enough to touch, in front of the visitor. */
+  petTarget(x: number, z: number, reach = 2.6): { sp: SpeciesName; x: number; y: number; z: number; ref: number } | null {
+    let best: { sp: SpeciesName; x: number; y: number; z: number; ref: number } | null = null;
+    let bd = reach;
+    this.animals.forEach((a, ref) => {
+      if (a.hidden || !TRAITS[a.sp].tame || a.state === 'flee') return;
+      const d = Math.hypot(a.x - x, a.z - z) - TRAITS[a.sp].body[1] * a.scale * 0.6;
+      if (d < bd) {
+        bd = d;
+        best = { sp: a.sp, x: a.x, y: a.y + TRAITS[a.sp].body[0] * a.scale, z: a.z, ref };
+      }
+    });
+    return best;
+  }
+
+  /** Stroke it: it lifts its head, stays a while and is not afraid of you for some time. */
+  pet(ref: number): void {
+    const a = this.animals[ref];
+    if (!a) return;
+    a.happy = 40;
+    a.state = 'look';
+    a.t = 5;
+  }
+
+  /** Where the animals of one kind are (for the map and for quests). */
+  whereabouts(sp: SpeciesName): { x: number; z: number } | null {
+    const a = this.animals.find((q) => q.sp === sp);
+    return a ? { x: a.home.x, z: a.home.z } : null;
   }
 
   /** The nearest visible animal of each kind within reach (for their calls). */

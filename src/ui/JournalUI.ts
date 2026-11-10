@@ -1,7 +1,16 @@
 import { CATALOG, BY_ID, CATEGORY_LABEL, type Category, type Entry } from '../discovery/catalog';
 import type { Journal, Photo } from '../discovery/Journal';
 
-type Tab = Category | 'album';
+type Tab = Category | 'album' | 'quests' | 'lore';
+
+/** The game's own pages (quest log, lore), rendered elsewhere. */
+export interface JournalExtra {
+  quests(): string;
+  lore(): string;
+  questCount(): string;
+  loreCount(): string;
+  track(id: string): void;
+}
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
@@ -32,9 +41,10 @@ export class JournalUI {
   private readonly tabs: HTMLElement;
   private readonly count: HTMLElement;
   private readonly viewer: HTMLElement;
-  private tab: Tab = 'flora';
+  tab: Tab = 'flora';
   visible = false;
   onChange: ((open: boolean) => void) | null = null;
+  extra: JournalExtra | null = null;
 
   constructor(private readonly journal: Journal) {
     this.el = document.createElement('div');
@@ -67,6 +77,12 @@ export class JournalUI {
       }
       if (t.closest('.jr-close')) {
         this.hide();
+        return;
+      }
+      const tr = t.closest<HTMLElement>('[data-track]');
+      if (tr && this.extra) {
+        this.extra.track(tr.dataset.track!);
+        this.render();
         return;
       }
       const card = t.closest<HTMLElement>('[data-entry]');
@@ -104,9 +120,9 @@ export class JournalUI {
         else this.hide();
       }
       if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
-        const order: Tab[] = ['flora', 'fauna', 'place', 'album'];
+        const order: Tab[] = this.extra ? ['quests', 'flora', 'fauna', 'place', 'lore', 'album'] : ['flora', 'fauna', 'place', 'album'];
         const i = order.indexOf(this.tab);
-        this.tab = order[(i + (e.code === 'ArrowRight' ? 1 : 3)) % 4];
+        this.tab = order[(i + (e.code === 'ArrowRight' ? 1 : order.length - 1)) % order.length];
         this.closeViewer();
         this.render();
       }
@@ -143,14 +159,16 @@ export class JournalUI {
     const all = j.counts();
     this.count.textContent = `${all.got} of ${all.total} collected · ${all.seen} found`;
     const tabs: [Tab, string][] = [
+      ...(this.extra ? ([['quests', 'Quests']] as [Tab, string][]) : []),
       ['flora', CATEGORY_LABEL.flora.many],
       ['fauna', CATEGORY_LABEL.fauna.many],
       ['place', CATEGORY_LABEL.place.many],
+      ...(this.extra ? ([['lore', 'Lore']] as [Tab, string][]) : []),
       ['album', 'Album'],
     ];
     this.tabs.innerHTML = tabs
       .map(([t, label]) => {
-        const c = t === 'album' ? `${j.photos.length}` : (() => {
+        const c = t === 'album' ? `${j.photos.length}` : t === 'quests' ? this.extra?.questCount() ?? '' : t === 'lore' ? this.extra?.loreCount() ?? '' : (() => {
           const k = j.counts(t);
           return `${k.got}/${k.total}`;
         })();
@@ -158,6 +176,10 @@ export class JournalUI {
       })
       .join('');
 
+    if (this.tab === 'quests' || this.tab === 'lore') {
+      this.body.innerHTML = this.tab === 'quests' ? this.extra?.quests() ?? '' : this.extra?.lore() ?? '';
+      return;
+    }
     if (this.tab === 'album') {
       const photos = j.photos;
       this.body.innerHTML = photos.length

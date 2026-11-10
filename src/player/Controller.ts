@@ -55,6 +55,11 @@ export class Controller {
   onLanded: (() => void) | null = null;
   private slide = 0;
   private fallV = 0;
+  /** Jump: height above the ground and vertical speed. */
+  private jumpY = 0;
+  private jumpV = 0;
+  /** Sitting (the swing): no walking until you stand up. */
+  seated = false;
   /** Shift held in flight. */
   boosting = false;
   /** Ground slope under the walker (rise over run). */
@@ -110,6 +115,11 @@ export class Controller {
     else this.keys.delete(k);
     if (this.flying && k === 'Space') e.preventDefault();
     if (!this.flying) {
+      if (down && k === 'Space' && this.enabled && !this.macro && !e.repeat && this.jumpY === 0 && !this.wanderActive) {
+        this.jumpV = 4.6;
+        this.seated = false;
+        e.preventDefault();
+      }
       if (k === 'ControlLeft' || k === 'ControlRight') this.crouchHeld = down;
       if (down && k === 'KeyC' && !e.repeat) this.crouchToggled = !this.crouchToggled;
     }
@@ -203,6 +213,7 @@ export class Controller {
       const r = (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0) - (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0);
       input.set(r, f).add(this.touchMove);
       if (input.lengthSq() > 1) input.normalize();
+      if (this.seated && input.lengthSq() > 0.01) this.seated = false;
       run = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
     }
 
@@ -296,8 +307,19 @@ export class Controller {
     const roll = Math.sin(this.bobPhase) * 0.004 * this.bobAmp;
     const breathe = Math.sin(this.time * 1.2) * 0.006;
 
-    const eye = MathUtils.lerp(MathUtils.lerp(EYE, EYE_CROUCH, this.crouch), 1.22, this.macroK * (1 - this.crouch));
-    camera.position.set(this.position.x, this.position.y + eye + bobY + breathe, this.position.z);
+    // A hop: up on an impulse, down under gravity, a footfall when you land.
+    if (this.jumpV !== 0 || this.jumpY > 0) {
+      this.jumpV -= 13 * dt;
+      this.jumpY += this.jumpV * dt;
+      if (this.jumpY <= 0) {
+        this.jumpY = 0;
+        this.jumpV = 0;
+        this.onStep?.(1);
+      }
+    }
+    const sway = this.seated ? Math.sin(this.time * 1.5) * 0.16 : 0;
+    const eye = MathUtils.lerp(MathUtils.lerp(EYE, EYE_CROUCH, this.crouch), 1.22, this.macroK * (1 - this.crouch)) - (this.seated ? 0.45 : 0);
+    camera.position.set(this.position.x - Math.sin(this.yaw) * sway, this.position.y + eye + bobY + breathe + this.jumpY + Math.abs(sway) * 0.25, this.position.z - Math.cos(this.yaw) * sway);
     camera.rotation.set(this.pitch, this.yaw, roll, 'YXZ');
   }
 }

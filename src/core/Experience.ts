@@ -15,7 +15,7 @@ import { Discovery, type LensState } from '../discovery/Discovery';
 import { Journal } from '../discovery/Journal';
 import { FlightFX } from '../player/FlightFX';
 import { Critters } from '../world/life/Critters';
-import { RareFlora } from '../world/life/RareFlora';
+import { RareFlora, type Subject } from '../world/life/RareFlora';
 import { Controller } from '../player/Controller';
 import { TouchControls } from '../player/TouchControls';
 import { FX, Post } from '../post/Post';
@@ -87,6 +87,12 @@ export class Experience {
   readonly critters: Critters;
   readonly discovery: Discovery;
   readonly flightFX = new FlightFX();
+  /** Who lists subjects for the lens (the game adds its own creatures later). */
+  readonly subjectSources: ((out: Subject[]) => void)[] = [];
+  /** Per-frame hooks, run once the world has updated (the game layer). */
+  readonly hooks: ((dt: number) => void)[] = [];
+  /** Extra spots where the grass bows away (things worth walking up to). */
+  extraParts: ((out: { x: number; z: number; r: number; s: number }[], x: number, z: number) => void) | null = null;
   /** What the lens sees this frame. */
   lens: LensState;
   private shot: ((canvas: HTMLCanvasElement) => void) | null = null;
@@ -176,16 +182,12 @@ export class Experience {
     this.sfx = new Sfx(this.audio);
     this.rareFlora = new RareFlora(this.realm, this.forest, (id) => this.journal.isCollected(id));
     this.critters = new Critters(this.features, this.realm.map);
-    this.discovery = new Discovery(
-      this.realm,
-      this.journal,
-      [
-        (out) => this.rareFlora.subjects(out),
-        (out) => this.fauna.subjects(out, this.camera.position.x, this.camera.position.z),
-        (out) => this.critters.subjects(out, this.camera.position, this.birds, this.tod.night, U.uSunDir.value.y),
-      ],
-      () => this.skyward.shrine,
+    this.subjectSources.push(
+      (out) => this.rareFlora.subjects(out),
+      (out) => this.fauna.subjects(out, this.camera.position.x, this.camera.position.z),
+      (out) => this.critters.subjects(out, this.camera.position, this.birds, this.tod.night, U.uSunDir.value.y),
     );
+    this.discovery = new Discovery(this.realm, this.journal, this.subjectSources, () => this.skyward.shrine);
     this.discovery.settle();
     this.lens = this.discovery.state;
     this.controller.waypoints = () => [
@@ -355,6 +357,23 @@ export class Experience {
 
   get flying(): boolean {
     return this.controller.flying;
+  }
+
+  /** Be set down in mid-air somewhere (stepping through the door of the Pillar). */
+  ascend(x: number, y: number, z: number, yaw: number): void {
+    const c = this.controller;
+    if (this.macro) this.setMacro(false);
+    this.setWander(false);
+    const was = c.flying;
+    c.flying = false;
+    c.teleport(x, z, yaw);
+    c.startFlight(this.camera);
+    c.flight.pos.set(x, y, z);
+    c.flight.vel.set(0, 0, 0);
+    c.flight.mode = 'fly';
+    c.pitch = 0.05;
+    this.cut();
+    if (!was) this.onFlightChange?.(true);
   }
 
   setWander(on: boolean): void {
@@ -558,10 +577,12 @@ export class Experience {
     const alt = cam.y - p.y;
     const high = this.controller.flying && alt > 25;
     const tod = params.atmosphere.time;
+    this.fauna.view(cam, Math.max(1, params.move.fov / this.camera.fov));
     this.fauna.update(dt, high ? 1e6 : p.x, high ? 1e6 : p.z, this.controller.speed, tod);
     this.rareFlora.update(dt, cam.x, cam.z, this.features.version, smooth01((U.uLights.value - 0.25) / 0.45));
     this.critters.update(dt, p.x, p.z, tod, this.features.version);
     this.flightFeel(dt, alt);
+    if (!this.director) for (const h of this.hooks) h(dt);
     if (this.started && !this.director) {
       this.lens = this.discovery.update(dt, this.camera, this.macro, tod, this.post ? this.post.centerDepth : NaN);
       // Focus pulls onto the framed subject (not the grass in front of it).
@@ -600,6 +621,7 @@ export class Experience {
         tp.push({ x: t.x, z: t.z, r: animal ? 1.3 : 0.7, s: 1 });
         if (d > 0.5) tp.push({ x: (t.x + p.x) / 2, z: (t.z + p.z) / 2, r: animal ? 0.7 : 0.55, s: 1, ax: (t.x - p.x) / d, az: (t.z - p.z) / d, len: d / 2 });
       }
+      this.extraParts?.(tp, p.x, p.z);
       this.rareFlora.nearby(p.x, p.z, 19, (id) => this.journal.isCollected(id), tp);
       if (tp.length > 8) tp.length = 8;
     }
@@ -685,7 +707,10 @@ export class Experience {
     const rx = Math.cos(yaw);
     const rz = -Math.sin(yaw);
     const pan = (ax: number, az: number, d: number) => ((ax - x) * rx + (az - z) * rz) / Math.max(d, 1);
-    const kinds: Partial<Record<string, Call>> = { sheep: 'sheep', horse: 'horse', chicken: 'chicken', owl: 'owl', fox: 'fox', cat: 'cat', deer: 'deer', heron: 'heron' };
+    const kinds: Partial<Record<string, Call>> = { sheep: 'sheep', horse: 'horse', chicken: 'chicken', owl: 'owl', fox: 'fox', cat: 'cat', deer: 'deer', heron: 'heron', cow: 'cow', dog: 'dog', raven: 'raven', bear: 'bear', squirrel: 'squirrel', kitsune: 'fox' };
+    // Wolves carry: you hear the pack from far across the fields.
+    const pack = this.fauna.nearest(x, z, 420).find((a) => a.sp === 'wolf');
+    if (pack && Math.random() < 0.3) this.sfx.call('wolf', Math.min(52, pack.d * 0.13), pan(pack.x, pack.z, pack.d));
     for (const a of this.fauna.nearest(x, z, 55)) {
       const k = kinds[a.sp];
       if (k && Math.random() < 0.35) this.sfx.call(k, a.d, pan(a.x, a.z, a.d));

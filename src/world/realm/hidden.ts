@@ -230,14 +230,7 @@ export function planHidden(plan: Plan, m: RealmMap, sites: Site[]): void {
         b.blob(cx, y - 0.1, cz, 1.4, 0.75, 1.15, 0.3, '#8e8a80', M.rock, r());
         b.blob(cx + 0.9, y - 0.2, cz + 0.6, 0.7, 0.45, 0.6, 1.1, '#9a968a', M.rock, r());
         b.blob(cx - 1.0, y - 0.25, cz - 0.5, 0.6, 0.4, 0.7, 2.1, '#8a867c', M.rock, r());
-        const tilt = lean(0.7, 0.12);
-        const rot = 0.5;
-        // Blade, fuller, guard, grip, pommel.
-        b.box(cx, y + 0.35, cz, 0.09, 1.25, 0.018, rot, '#d8dee8', M.metal, 0.8, tilt);
-        b.box(cx, y + 0.5, cz, 0.022, 1.0, 0.022, rot, '#8ff0ff', M.rune, 0.4, tilt);
-        b.box(cx + 0.07, y + 1.6, cz + 0.02, 0.5, 0.06, 0.08, rot, '#c8a24a', M.metal, 0.6, tilt);
-        b.cyl(cx + 0.08, y + 1.65, cz + 0.02, 0.026, 0.32, '#3a2a22', M.wood, 8, 0.5, tilt);
-        b.gem(cx + 0.1, y + 2.02, cz + 0.03, 0.06, 0.08, 0.06, 0, '#8ff0ff', M.rune, 0.9);
+        // The sword itself is drawn by Mysteries.ts (it can be pulled).
       },
     });
   }

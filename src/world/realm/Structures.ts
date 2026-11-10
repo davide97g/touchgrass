@@ -342,7 +342,7 @@ void main() {
 `;
 
 /** Halos around lamps at dusk (additive points). */
-function lampGlow(lamps: { x: number; y: number; z: number }[], color: [number, number, number], size: number): Points {
+export function lampGlow(lamps: { x: number; y: number; z: number }[], color: [number, number, number], size: number): Points {
   const g = new BufferGeometry();
   const p = new Float32Array(lamps.length * 3);
   const s = new Float32Array(lamps.length);

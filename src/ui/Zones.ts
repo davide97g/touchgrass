@@ -31,6 +31,11 @@ export class Zones {
   private pendingT = 0;
   private hideTimer = 0;
   private readonly cards: { el: HTMLElement; a: number }[] = [];
+  /** Where the tracked quest points (a gold mark on the compass), or null. */
+  quest: { x: number; z: number; label: string } | null = null;
+  private questEl!: HTMLElement;
+  private questDist!: HTMLElement;
+  private questLabel!: HTMLElement;
 
   constructor(private readonly realm: Realm) {
     this.banner = document.createElement('div');
@@ -74,6 +79,12 @@ export class Zones {
     };
     for (const s of realm.sites) add(s.x, s.z, s.name, s.kind);
     add(CASTLE.x, CASTLE.z, 'Floating Castle', 'castle');
+    this.questEl = document.createElement('span');
+    this.questEl.className = 'cp-mark quest near';
+    this.questEl.innerHTML = '<i></i><b></b><em></em>';
+    this.strip.appendChild(this.questEl);
+    this.questLabel = this.questEl.querySelector('b')!;
+    this.questDist = this.questEl.querySelector('em')!;
   }
 
   private zoneAt(x: number, z: number): Zone {
@@ -129,6 +140,14 @@ export class Zones {
       return rel;
     };
     for (const c of this.cards) place(c.el, c.a);
+    if (this.quest) {
+      const dx = this.quest.x - x;
+      const dz = this.quest.z - z;
+      place(this.questEl, Math.atan2(-dx, -dz));
+      const d = Math.hypot(dx, dz);
+      this.questLabel.textContent = this.quest.label;
+      this.questDist.textContent = d < 1000 ? `${Math.round(d / 5) * 5} m` : `${(d / 1000).toFixed(1)} km`;
+    } else this.questEl.style.opacity = '0';
     for (const m of this.marks) {
       const dx = m.x - x;
       const dz = m.z - z;

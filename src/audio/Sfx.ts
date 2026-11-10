@@ -2,7 +2,7 @@ import type { AudioEngine } from './AudioEngine';
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 
-export type Call = 'sheep' | 'horse' | 'chicken' | 'owl' | 'frog' | 'kite' | 'fox' | 'cat' | 'deer' | 'heron';
+export type Call = 'sheep' | 'horse' | 'chicken' | 'owl' | 'frog' | 'kite' | 'fox' | 'cat' | 'deer' | 'heron' | 'cow' | 'dog' | 'wolf' | 'raven' | 'bear' | 'duck' | 'squirrel';
 
 /**
  * One-shot sounds, all synthesized: the camera shutter, discovery chimes, the sparkle of a new
@@ -163,6 +163,242 @@ export class Sfx {
     this.burst(o, t, 0.5, 'bandpass', 1400, 0.6, 0.35, 0.01);
   }
 
+  // ---------------------------------------------------------------- the game
+
+  /** A light gathered: a glassy note that climbs with each one in a row. */
+  pickup(combo: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.005;
+    const o = this.out(0.2, 0, 4);
+    const scale = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];
+    const f = 659.25 * Math.pow(2, scale[Math.min(combo, scale.length - 1)] / 12);
+    this.tone(o, t, f, 1.4, 0.5, 'sine', 0.003);
+    this.tone(o, t, f * 2, 0.7, 0.2, 'sine', 0.002);
+    this.tone(o, t + 0.06, f * 1.5, 1.0, 0.25, 'sine', 0.003);
+    for (let i = 0; i < 5; i++) this.tone(o, t + 0.03 * i, rand(3000, 6500), 0.25, 0.04, 'sine', 0.002);
+  }
+
+  /** Experience earned: a soft tick. */
+  xp(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.005;
+    const o = this.out(0.07, 0, 2);
+    this.tone(o, t, 1318, 0.18, 0.5, 'sine', 0.003);
+    this.tone(o, t + 0.07, 1760, 0.22, 0.4, 'sine', 0.003);
+  }
+
+  /** A new rank: a bright rising fanfare. */
+  levelUp(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.05;
+    const o = this.out(0.17, 0, 9);
+    const notes = [392, 523.25, 659.25, 783.99, 1046.5];
+    notes.forEach((f, i) => {
+      const at = t + i * 0.12;
+      this.tone(o, at, f, i === notes.length - 1 ? 3.4 : 1.2, 0.4, 'triangle', 0.01);
+      this.tone(o, at, f * 2, 0.8, 0.12, 'sine', 0.005);
+    });
+    for (const f of [523.25, 659.25, 783.99]) this.tone(o, t + 0.62, f, 3.6, 0.22, 'triangle', 0.05);
+    for (let i = 0; i < 22; i++) this.tone(o, t + 0.6 + i * 0.05, rand(2200, 7000), 0.5, 0.035, 'sine', 0.002);
+  }
+
+  /** A quest finished: a warm cadence. */
+  questDone(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.05;
+    const o = this.out(0.16, 0, 9);
+    for (const [i, chord] of [[349.23, 440, 523.25], [392, 493.88, 587.33], [523.25, 659.25, 783.99, 1046.5]].entries()) {
+      for (const f of chord) this.tone(o, t + i * 0.34, f, i === 2 ? 4 : 0.9, 0.24, 'triangle', 0.02);
+    }
+    for (let i = 0; i < 14; i++) this.tone(o, t + 0.75 + i * 0.05, rand(2000, 5200), 0.5, 0.035, 'sine', 0.002);
+  }
+
+  /** A sigil wakes: a deep bell, a rising shimmer. */
+  sigil(n: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.03;
+    const o = this.out(0.22, 0, 12);
+    const base = 110 * Math.pow(2, [0, 3, 5, 7, 10][Math.min(4, Math.max(0, n - 1))] / 12);
+    for (const [m, lv, d] of [[1, 0.6, 6], [2.01, 0.3, 4.5], [2.76, 0.22, 3.4], [5.4, 0.1, 2], [8.9, 0.05, 1.2]] as const) this.tone(o, t, base * m, d, lv, 'sine', 0.004);
+    this.burst(o, t, 0.6, 'lowpass', 300, 0.7, 0.5, 0.01);
+    for (let i = 0; i < 26; i++) this.tone(o, t + 0.4 + i * 0.07, base * 4 * Math.pow(2, [0, 3, 5, 7, 10, 12][i % 6] / 12) * (i > 12 ? 2 : 1), 0.9, 0.05, 'sine', 0.01);
+  }
+
+  /** A chest opens: latch, creak, a spill of gold. */
+  chest(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.01;
+    const o = this.out(0.22, 0, 6);
+    this.burst(o, t, 0.05, 'bandpass', 2600, 2, 0.8);
+    this.tone(o, t + 0.08, 180, 0.5, 0.25, 'sawtooth', 0.05, 1.6);
+    this.burst(o, t + 0.1, 0.5, 'bandpass', 700, 3, 0.25, 0.08);
+    for (let i = 0; i < 16; i++) this.tone(o, t + 0.5 + i * 0.045, [1046.5, 1318.5, 1568, 2093][i % 4] * (1 + Math.floor(i / 8)), 0.6, 0.09, 'sine', 0.003);
+  }
+
+  /** Paper unpinned from a post. */
+  page(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.01;
+    const o = this.out(0.2, 0, 3);
+    this.burst(o, t, 0.16, 'highpass', 2500, 0.7, 0.5, 0.02);
+    this.burst(o, t + 0.14, 0.22, 'bandpass', 4200, 0.9, 0.4, 0.04);
+    this.tone(o, t + 0.3, 880, 0.9, 0.12, 'sine', 0.01);
+    this.tone(o, t + 0.42, 1174.7, 1.1, 0.1, 'sine', 0.01);
+  }
+
+  /** Something refuses: two low dull notes. */
+  deny(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.01;
+    const o = this.out(0.16, 0, 3);
+    this.tone(o, t, 196, 0.25, 0.5, 'triangle', 0.01);
+    this.tone(o, t + 0.16, 174.6, 0.45, 0.5, 'triangle', 0.01);
+  }
+
+  /** A contented little sound for an animal that let itself be stroked. */
+  pet(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.01;
+    const o = this.out(0.13, 0, 3);
+    this.tone(o, t, 783.99, 0.3, 0.4, 'sine', 0.01);
+    this.tone(o, t + 0.12, 987.77, 0.3, 0.4, 'sine', 0.01);
+    this.tone(o, t + 0.24, 1174.7, 0.6, 0.4, 'sine', 0.01);
+  }
+
+  /** Stone grinding on stone, for as long as the door moves. */
+  rumble(dur: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.01;
+    const o = this.out(0.6, 0, dur + 2);
+    const s = ctx.createBufferSource();
+    s.buffer = this.noiseBuf(ctx);
+    s.loop = true;
+    const f = ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.value = 130;
+    f.Q.value = 3;
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = 11;
+    const lg = ctx.createGain();
+    lg.gain.value = 60;
+    lfo.connect(lg).connect(f.frequency);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(1, t + 0.6);
+    g.gain.setValueAtTime(1, t + dur - 0.8);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.4);
+    s.connect(f).connect(g).connect(o);
+    s.start(t);
+    lfo.start(t);
+    s.stop(t + dur + 0.5);
+    lfo.stop(t + dur + 0.5);
+    this.tone(o, t, 41, dur, 0.5, 'sine', 0.5);
+    this.tone(o, t + dur - 0.1, 55, 1.6, 0.9, 'sine', 0.005, 0.5);
+  }
+
+  /** The sky serpent wakes. */
+  roar(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.02;
+    const o = this.out(0.5, 0, 8);
+    for (const [f0, lv] of [[82, 0.6], [123, 0.4], [164.8, 0.25]] as const) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(f0 * 0.6, t);
+      osc.frequency.exponentialRampToValueAtTime(f0 * 1.5, t + 1.2);
+      osc.frequency.exponentialRampToValueAtTime(f0 * 0.8, t + 4.2);
+      const fl = ctx.createBiquadFilter();
+      fl.type = 'bandpass';
+      fl.frequency.setValueAtTime(300, t);
+      fl.frequency.exponentialRampToValueAtTime(1400, t + 1.3);
+      fl.frequency.exponentialRampToValueAtTime(350, t + 4.2);
+      fl.Q.value = 1.4;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(lv, t + 0.5);
+      g.gain.setValueAtTime(lv, t + 2.4);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 4.6);
+      osc.connect(fl).connect(g).connect(o);
+      osc.start(t);
+      osc.stop(t + 4.7);
+    }
+    this.burst(o, t, 4.2, 'bandpass', 900, 0.6, 0.5, 0.6);
+    for (let i = 0; i < 20; i++) this.tone(o, t + 1.5 + i * 0.12, rand(1500, 4000), 1.2, 0.03, 'sine', 0.05);
+  }
+
+  /** The cloud whale sings: long notes sliding like weather. */
+  whale(level: number, pan: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.02;
+    const o = this.out(0.22 * level, pan, 12);
+    const starts = [146.8, 196, 220, 261.6];
+    for (let i = 0; i < 3; i++) {
+      const f0 = starts[Math.floor(Math.random() * starts.length)];
+      const at = t + i * rand(1.8, 2.6);
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f0, at);
+      osc.frequency.exponentialRampToValueAtTime(f0 * rand(1.3, 2.1), at + 1.4);
+      osc.frequency.exponentialRampToValueAtTime(f0 * rand(0.7, 1.1), at + 3);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, at);
+      g.gain.linearRampToValueAtTime(0.5, at + 0.7);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 3.2);
+      osc.connect(g).connect(o);
+      osc.start(at);
+      osc.stop(at + 3.3);
+    }
+  }
+
+  /** Kodama: a dry wooden rattle as the head turns. */
+  rattle(pan: number): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.01;
+    const o = this.out(0.2, pan, 3);
+    for (let i = 0; i < 9; i++) {
+      const at = t + i * 0.05 + (i > 4 ? (i - 4) * 0.012 : 0);
+      this.burst(o, at, 0.03, 'bandpass', rand(1700, 2600), 9, 0.9);
+      this.tone(o, at, rand(900, 1300), 0.03, 0.2, 'triangle', 0.001);
+    }
+  }
+
+  /** Through a ring of the wind trial. */
+  ring(i: number, last: boolean): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.005;
+    const o = this.out(0.2, 0, 5);
+    const f = 440 * Math.pow(2, [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19][i % 12] / 12);
+    this.tone(o, t, f, 1.2, 0.5, 'triangle', 0.004);
+    this.tone(o, t, f * 2, 0.6, 0.2, 'sine', 0.004);
+    this.burst(o, t, 0.5, 'bandpass', 2400, 0.8, 0.25, 0.05);
+    if (last) for (const m of [1.25, 1.5, 2]) this.tone(o, t + 0.12, f * m, 2.6, 0.3, 'triangle', 0.01);
+  }
+
+  /** A wish dropped into the well. */
+  wish(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime + 0.01;
+    const o = this.out(0.2, 0, 7);
+    this.tone(o, t, 1500, 0.12, 0.3, 'sine', 0.002, 0.4);
+    this.burst(o, t + 0.05, 0.25, 'bandpass', 1800, 2, 0.3, 0.01);
+    for (let i = 0; i < 7; i++) this.tone(o, t + 0.3 + i * 0.16, 523.25 * Math.pow(2, [0, 4, 7, 11, 12, 16, 19][i] / 12), 2.6, 0.16, 'sine', 0.02);
+  }
+
   /** The voice of an animal: distance-dulled and panned. Rate-limited per kind. */
   call(kind: Call, dist: number, pan: number): void {
     const ctx = this.ctx;
@@ -180,6 +416,13 @@ export class Sfx {
       cat: [14, 30],
       deer: [16, 40],
       heron: [20, 45],
+      cow: [8, 20],
+      dog: [5, 14],
+      wolf: [9, 20],
+      raven: [7, 18],
+      bear: [14, 30],
+      duck: [4, 12],
+      squirrel: [8, 20],
     };
     this.next[kind] = now + rand(...gap[kind]);
     const near = Math.max(0, 1 - dist / 60);
@@ -279,6 +522,94 @@ export class Sfx {
       case 'cat': {
         const o2 = this.tone(lp, t, 700, 0.6, 0.25, 'sawtooth', 0.05, 0.75);
         void o2;
+        break;
+      }
+      case 'cow': {
+        // A long low moo that swells and sags.
+        const f0 = rand(105, 135);
+        const osc = ctx.createOscillator();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(f0, t);
+        osc.frequency.linearRampToValueAtTime(f0 * 1.35, t + 0.5);
+        osc.frequency.linearRampToValueAtTime(f0 * 0.92, t + 1.5);
+        const form = ctx.createBiquadFilter();
+        form.type = 'bandpass';
+        form.frequency.setValueAtTime(380, t);
+        form.frequency.linearRampToValueAtTime(620, t + 0.6);
+        form.Q.value = 2.2;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(0.7, t + 0.2);
+        g.gain.setValueAtTime(0.6, t + 1.0);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 1.6);
+        osc.connect(form).connect(g).connect(lp);
+        osc.start(t);
+        osc.stop(t + 1.65);
+        break;
+      }
+      case 'dog': {
+        const n = 1 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < n; i++) {
+          const at = t + i * 0.26;
+          this.tone(lp, at, rand(380, 440), 0.13, 0.4, 'sawtooth', 0.004, 0.6);
+          this.burst(lp, at, 0.1, 'bandpass', 1100, 1.5, 0.35);
+        }
+        break;
+      }
+      case 'wolf': {
+        // A howl: up, held with a quaver, falling away. A second voice answers.
+        for (const [dt0, f0, lv] of [[0, rand(330, 380), 0.42], [1.1, rand(420, 470), 0.26]] as const) {
+          const osc = ctx.createOscillator();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(f0 * 0.62, t + dt0);
+          osc.frequency.exponentialRampToValueAtTime(f0, t + dt0 + 0.55);
+          osc.frequency.setValueAtTime(f0, t + dt0 + 1.7);
+          osc.frequency.exponentialRampToValueAtTime(f0 * 0.7, t + dt0 + 2.7);
+          const vib = ctx.createOscillator();
+          vib.frequency.value = 5.5;
+          const vg = ctx.createGain();
+          vg.gain.value = 5;
+          vib.connect(vg).connect(osc.frequency);
+          const g = ctx.createGain();
+          g.gain.setValueAtTime(0, t + dt0);
+          g.gain.linearRampToValueAtTime(lv, t + dt0 + 0.4);
+          g.gain.setValueAtTime(lv, t + dt0 + 1.8);
+          g.gain.exponentialRampToValueAtTime(0.0001, t + dt0 + 2.9);
+          osc.connect(g).connect(lp);
+          osc.start(t + dt0);
+          vib.start(t + dt0);
+          osc.stop(t + dt0 + 3);
+          vib.stop(t + dt0 + 3);
+        }
+        break;
+      }
+      case 'raven': {
+        // Kraa: a rough, rolling croak.
+        const n = 2 + Math.floor(Math.random() * 2);
+        for (let i = 0; i < n; i++) {
+          const at = t + i * 0.34;
+          this.tone(lp, at, rand(240, 280), 0.22, 0.35, 'sawtooth', 0.01, 0.8);
+          this.tone(lp, at, rand(34, 40), 0.22, 0.3, 'square', 0.01);
+          this.burst(lp, at, 0.2, 'bandpass', 1500, 1.2, 0.5, 0.01);
+        }
+        break;
+      }
+      case 'bear': {
+        this.tone(lp, t, 70, 1.1, 0.6, 'sawtooth', 0.15, 0.75);
+        this.burst(lp, t, 1.1, 'lowpass', 260, 1.2, 0.8, 0.2);
+        break;
+      }
+      case 'duck': {
+        const n = 3 + Math.floor(Math.random() * 4);
+        for (let i = 0; i < n; i++) {
+          const at = t + i * (0.17 + i * 0.012);
+          this.tone(lp, at, 330 - i * 12, 0.11, 0.3 - i * 0.03, 'sawtooth', 0.006, 0.75);
+          this.burst(lp, at, 0.09, 'bandpass', 1300, 3, 0.3);
+        }
+        break;
+      }
+      case 'squirrel': {
+        for (let i = 0; i < 5; i++) this.tone(lp, t + i * 0.07, rand(2400, 3000), 0.04, 0.2, 'square', 0.002, 0.8);
         break;
       }
       case 'deer':

@@ -9,6 +9,7 @@ import { BY_ID } from './discovery/catalog';
 import { JournalUI } from './ui/JournalUI';
 import { LensUI } from './ui/LensUI';
 import { Notice } from './ui/Notice';
+import { Adventure } from './game/Adventure';
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -92,6 +93,15 @@ function boot(): void {
     toastTimer = window.setTimeout(() => toastEl.classList.remove('on'), ms);
   };
 
+  // ---- the game: quests, lights, mysteries, the map ----
+  const adv = new Adventure(exp, zones, journalUI, (text, ms) => toast(text, ms), coarse);
+  if (import.meta.env.DEV) Object.assign(window, { __adv: adv });
+  adv.map.onChange = () => syncHud();
+  adv.hud.onReaderClose = () => {
+    if (!coarse && !journalUI.visible && !travel.visible && !adv.map.visible) exp.controller.requestLock();
+    syncHud();
+  };
+
   exp.discovery.onDiscover = (e) => {
     let note: string | undefined;
     if (e.when && !e.when.includes(params.atmosphere.time)) {
@@ -101,6 +111,7 @@ function boot(): void {
     exp.sfx.chime(e.rarity);
     markNew();
     journalUI.refresh();
+    adv.journalChanged(`found: ${e.name}`);
   };
   exp.discovery.onLock = () => exp.sfx.focusTick();
   exp.discovery.onAutoShot = () => shoot();
@@ -157,6 +168,7 @@ function boot(): void {
             else toast('saved to your album · J to see it', 1800);
             markNew();
             journalUI.refresh();
+            adv.journalChanged(collected && e ? `collected: ${e.name}` : 'a photo');
           });
         },
         'image/jpeg',
@@ -180,7 +192,7 @@ function boot(): void {
     landing.classList.add('gone');
     document.body.classList.add('in-field');
     window.setTimeout(
-      () => toast(coarse ? 'left thumb to walk · right thumb to look' : 'walk slowly · C to sink into the grass'),
+      () => toast(coarse ? 'left thumb to walk · right thumb to look' : adv.game.has('waystone') ? 'welcome back · J for your quests · Tab for the map' : 'something is glowing nearby · follow the little light', 4200),
       1200,
     );
     poke();
@@ -194,6 +206,7 @@ function boot(): void {
     btn('settings').classList.toggle('on', exp.panel.visible);
     btn('journal').classList.toggle('on', journalUI.visible);
     btn('travel').classList.toggle('on', travel.visible);
+    btn('map').classList.toggle('on', adv.map.visible);
     btn('fly').classList.toggle('on', exp.flying);
     btn('wander').classList.toggle('on', exp.controller.wanderActive || (exp.flying && exp.controller.flight.auto));
     btn('sound').classList.toggle('muted', params.audio.muted);
@@ -203,7 +216,7 @@ function boot(): void {
 
   const updatePaused = () => {
     const show =
-      exp.started && !coarse && !exp.controller.locked && !exp.controller.wanderActive && !exp.panel.visible && !travel.visible && !journalUI.visible;
+      exp.started && !coarse && !exp.controller.locked && !exp.controller.wanderActive && !exp.panel.visible && !travel.visible && !journalUI.visible && !adv.map.visible && !adv.hud.reading;
     paused.classList.toggle('on', show);
   };
 
@@ -235,6 +248,12 @@ function boot(): void {
     journal: () => {
       journalUI.toggle();
       if (journalUI.visible && travel.visible) travel.hide();
+      if (journalUI.visible && adv.map.visible) adv.map.hide();
+    },
+    map: () => {
+      if (journalUI.visible) journalUI.hide();
+      if (travel.visible) travel.hide();
+      adv.map.toggle();
     },
     breath: () => {
       exp.breath.toggle();
@@ -254,6 +273,7 @@ function boot(): void {
     },
     travel: () => {
       if (journalUI.visible) journalUI.hide();
+      if (adv.map.visible) adv.map.hide();
       travel.toggle();
     },
     settings: () => {
@@ -275,8 +295,23 @@ function boot(): void {
   });
 
   window.addEventListener('keydown', (e) => {
+    if (exp.started && e.code === 'Tab') e.preventDefault();
     if (!exp.started || e.repeat) return;
     if ((e.target as HTMLElement)?.closest?.('input, textarea, .tp-dfwv')) return;
+    if (e.code === 'Tab') {
+      actions.map();
+      syncHud();
+      return;
+    }
+    if (adv.hud.reading && (e.code === 'Escape' || e.code === 'KeyE' || e.code === 'Enter' || e.code === 'Space')) {
+      e.preventDefault();
+      adv.hud.closeReader();
+      return;
+    }
+    if (e.code === 'KeyE' && !journalUI.visible && !travel.visible && !adv.map.visible) {
+      adv.interact();
+      return;
+    }
     const map: Record<string, string> = {
       KeyT: 'time',
       KeyB: 'breath',
@@ -335,7 +370,7 @@ function boot(): void {
 
   // ---- pointer lock + idle chrome ----
   canvas.addEventListener('click', () => {
-    if (!exp.started || coarse || travel.visible || journalUI.visible) return;
+    if (!exp.started || coarse || travel.visible || journalUI.visible || adv.map.visible || adv.hud.reading) return;
     if (exp.panel.visible) {
       exp.panel.hide();
       syncHud();
